@@ -1,0 +1,44 @@
+{
+  "name": "lims-brain",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LIMS Brain — persistent, evolving product knowledge system for Sampleify. Phase 1 (M1).",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:types": "echo 'Run: supabase gen types typescript --local > src/db/database.types.ts'"
+  },
+  "dependencies": {
+    "@ai-sdk/amazon-bedrock": "^1.1.6",
+    "@ai-sdk/anthropic": "^1.0.0",
+    "@ai-sdk/google": "^1.2.22",
+    "@ai-sdk/openai": "^1.0.0",
+    "@resvg/resvg-js": "^2.6.2",
+    "@supabase/supabase-js": "^2.45.4",
+    "ai": "^4.0.0",
+    "next": "^15.0.0",
+    "pdf-parse": "^1.1.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "satori": "^0.44.3",
+    "unpdf": "^1.8.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^15.0.0",
+    "pg": "^8.23.1",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
