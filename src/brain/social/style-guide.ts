@@ -7,12 +7,12 @@
  * revision so the Studio remembers what the user likes/dislikes — the style you
  * dialed in on one post carries to all posts.
  *
- * Persistence: a small JSON file under the workspace (`.studio/style-guide.json`),
- * keyed by workspace_id. Durable across restarts, inspectable, no DB migration.
- * Can be promoted to a DB table later for multi-user.
+ * Persistence: a per-workspace row in the `studio_state` table (key
+ * `style_guide`), reached through the repository layer. Durable across
+ * restarts and serverless invocations (the previous local JSON file
+ * approach fails on read-only serverless filesystems).
  */
-import { promises as fs } from "node:fs";
-import path from "node:path";
+import { Repositories } from "@/db/repositories";
 
 export interface StyleRule {
   id: string;
@@ -29,28 +29,17 @@ export interface StyleGuide {
   updatedAt: string;
 }
 
-const DIR = path.join(process.cwd(), ".studio");
-
-function fileFor(workspaceId: string) {
-  const safe = workspaceId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  return path.join(DIR, `style-guide.${safe}.json`);
-}
-
 export async function loadStyleGuide(workspaceId: string): Promise<StyleGuide> {
-  try {
-    const raw = await fs.readFile(fileFor(workspaceId), "utf8");
-    const parsed = JSON.parse(raw) as StyleGuide;
-    if (Array.isArray(parsed.rules)) return parsed;
-  } catch {
-    // no guide yet
+  const value = await new Repositories().getStudioState<StyleGuide>(workspaceId, "style_guide");
+  if (value && Array.isArray(value.rules)) {
+    return { workspaceId, rules: value.rules, updatedAt: value.updatedAt };
   }
   return { workspaceId, rules: [], updatedAt: new Date().toISOString() };
 }
 
 export async function saveStyleGuide(guide: StyleGuide): Promise<void> {
-  await fs.mkdir(DIR, { recursive: true });
   guide.updatedAt = new Date().toISOString();
-  await fs.writeFile(fileFor(guide.workspaceId), JSON.stringify(guide, null, 2), "utf8");
+  await new Repositories().setStudioState(guide.workspaceId, "style_guide", guide);
 }
 
 /** Add rules, de-duplicating against near-identical existing ones. */

@@ -8,11 +8,10 @@
  * next generation as "more like the high-rated ones, less like the low-rated
  * ones". Taste compounds across the session and persists.
  *
- * Persistence: a per-workspace JSON file under .studio (no DB migration).
+ * Persistence: a per-workspace row in the `studio_state` table (key
+ * `training`), reached through the repository layer.
  */
-import { promises as fs } from "node:fs";
-import path from "node:path";
-import type { Repositories } from "@/db/repositories";
+import { Repositories } from "@/db/repositories";
 import type { ModelProvider } from "@/providers";
 import { retrieveForQuestion, type GroundingItem } from "../retrieval/ground";
 import { loadStyleGuide, renderStyleGuide, addStyleRules } from "./style-guide";
@@ -78,30 +77,17 @@ export interface SubmitFeedbackResult {
   history: TrainingRecord[];
 }
 
-const DIR = path.join(process.cwd(), ".studio");
-
-function fileFor(workspaceId: string) {
-  const safe = workspaceId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  return path.join(DIR, `training.${safe}.json`);
-}
-
 export async function loadTraining(workspaceId: string): Promise<TrainingState> {
-  try {
-    const raw = await fs.readFile(fileFor(workspaceId), "utf8");
-    const parsed = JSON.parse(raw) as TrainingState;
-    if (Array.isArray(parsed.history)) {
-      return { workspaceId, history: parsed.history, pending: parsed.pending ?? null, updatedAt: parsed.updatedAt };
-    }
-  } catch {
-    // none yet
+  const value = await new Repositories().getStudioState<TrainingState>(workspaceId, "training");
+  if (value && Array.isArray(value.history)) {
+    return { workspaceId, history: value.history, pending: value.pending ?? null, updatedAt: value.updatedAt };
   }
   return { workspaceId, history: [], pending: null, updatedAt: new Date().toISOString() };
 }
 
 async function saveTraining(state: TrainingState): Promise<void> {
-  await fs.mkdir(DIR, { recursive: true });
   state.updatedAt = new Date().toISOString();
-  await fs.writeFile(fileFor(state.workspaceId), JSON.stringify(state, null, 2), "utf8");
+  await new Repositories().setStudioState(state.workspaceId, "training", state);
 }
 
 // ── grounding helpers (shared shape with calendar) ──────────────────────────

@@ -262,6 +262,12 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["knowledge_changes"]["Insert"]>;
         Relationships: [];
       };
+      studio_state: {
+        Row: { workspace_id: string; key: string; value: Json; updated_at: string };
+        Insert: { workspace_id: string; key: string; value: Json; updated_at?: string };
+        Update: Partial<Database["public"]["Tables"]["studio_state"]["Insert"]>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {

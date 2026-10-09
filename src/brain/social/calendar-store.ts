@@ -2,13 +2,13 @@
  * Persistent social calendar — stores the user's working calendar (slots +
  * drafted posts + citations) so it survives reloads and server restarts.
  *
- * Lightweight durable store: a JSON file under the workspace, keyed by
- * workspace_id (same approach as the style guide). Can be promoted to a DB
- * table later for multi-user. This is what makes "see the content already
- * loaded in the Studio" work.
+ * Durable store: a per-workspace row in the `studio_state` table (key
+ * `calendar`), reached through the repository layer (same approach as the
+ * style guide). This is what makes "see the content already loaded in the
+ * Studio" work, and it survives serverless invocations where a local JSON
+ * file would not.
  */
-import { promises as fs } from "node:fs";
-import path from "node:path";
+import { Repositories } from "@/db/repositories";
 import type { CalSlot, CalCitation } from "./calendar";
 
 export interface StoredCalendar {
@@ -19,28 +19,16 @@ export interface StoredCalendar {
   updatedAt: string;
 }
 
-const DIR = path.join(process.cwd(), ".studio");
-
-function fileFor(workspaceId: string) {
-  const safe = workspaceId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  return path.join(DIR, `calendar.${safe}.json`);
-}
-
 export async function loadCalendar(workspaceId: string): Promise<StoredCalendar> {
-  try {
-    const raw = await fs.readFile(fileFor(workspaceId), "utf8");
-    const parsed = JSON.parse(raw) as StoredCalendar;
-    if (Array.isArray(parsed.slots)) {
-      return {
-        workspaceId,
-        slots: parsed.slots,
-        citations: Array.isArray(parsed.citations) ? parsed.citations : [],
-        brief: typeof parsed.brief === "string" ? parsed.brief : "",
-        updatedAt: parsed.updatedAt ?? new Date().toISOString(),
-      };
-    }
-  } catch {
-    // no calendar yet
+  const value = await new Repositories().getStudioState<StoredCalendar>(workspaceId, "calendar");
+  if (value && Array.isArray(value.slots)) {
+    return {
+      workspaceId,
+      slots: value.slots,
+      citations: Array.isArray(value.citations) ? value.citations : [],
+      brief: typeof value.brief === "string" ? value.brief : "",
+      updatedAt: value.updatedAt ?? new Date().toISOString(),
+    };
   }
   return { workspaceId, slots: [], citations: [], brief: "", updatedAt: new Date().toISOString() };
 }
@@ -49,7 +37,6 @@ export async function saveCalendar(
   workspaceId: string,
   data: { slots: CalSlot[]; citations: CalCitation[]; brief: string },
 ): Promise<StoredCalendar> {
-  await fs.mkdir(DIR, { recursive: true });
   const stored: StoredCalendar = {
     workspaceId,
     slots: data.slots,
@@ -57,14 +44,10 @@ export async function saveCalendar(
     brief: data.brief,
     updatedAt: new Date().toISOString(),
   };
-  await fs.writeFile(fileFor(workspaceId), JSON.stringify(stored, null, 2), "utf8");
+  await new Repositories().setStudioState(workspaceId, "calendar", stored);
   return stored;
 }
 
 export async function clearCalendar(workspaceId: string): Promise<void> {
-  try {
-    await fs.unlink(fileFor(workspaceId));
-  } catch {
-    // already gone
-  }
+  await new Repositories().deleteStudioState(workspaceId, "calendar");
 }

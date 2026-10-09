@@ -530,4 +530,38 @@ export class Repositories {
     if (error) throw error;
     return data;
   }
+
+  // ── Studio state ──────────────────────────────────────────────────────────
+  async getStudioState<T>(workspaceId: string, key: string): Promise<T | null> {
+    const { data, error } = await this.db
+      .from("studio_state")
+      .select("value")
+      .eq("workspace_id", workspaceId)
+      .eq("key", key)
+      .maybeSingle();
+    if (error) throw error;
+    return (data?.value as T) ?? null;
+  }
+
+  async setStudioState(workspaceId: string, key: string, value: unknown): Promise<void> {
+    const { error } = await this.db.from("studio_state").upsert(
+      {
+        workspace_id: workspaceId,
+        key,
+        value: value as Database["public"]["Tables"]["studio_state"]["Insert"]["value"],
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "workspace_id,key" },
+    );
+    if (error) throw error;
+  }
+
+  async deleteStudioState(workspaceId: string, key: string): Promise<void> {
+    const { error } = await this.db
+      .from("studio_state")
+      .delete()
+      .eq("workspace_id", workspaceId)
+      .eq("key", key);
+    if (error) throw error;
+  }
 }
