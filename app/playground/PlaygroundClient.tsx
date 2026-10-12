@@ -41,9 +41,9 @@ export function PlaygroundClient() {
   const [post, setPost] = useState<Post | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [topic, setTopic] = useState("");
-  const [postTopic, setPostTopic] = useState("");
-  const [bodyNote, setBodyNote] = useState("");
-  const [artDirection, setArtDirection] = useState("");
+  // Single composer: which channel the message targets, and the draft text.
+  const [channel, setChannel] = useState<"post" | "body" | "media">("body");
+  const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
   const [redoKind, setRedoKind] = useState<null | "new" | "body">(null);
   const [saved, setSaved] = useState(false);
@@ -59,8 +59,30 @@ export function PlaygroundClient() {
   const [svg, setSvg] = useState<string | null>(null);
   const [svgLoading, setSvgLoading] = useState(false);
 
-  const topicDirty = topic.trim() !== postTopic.trim();
   const feedRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-grow the composer to fit its content, up to ~5 lines, then scroll.
+  const autosize = useCallback(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+  }, []);
+  // Re-fit whenever the draft changes (typing, Post pre-fill, or clear on send).
+  useEffect(() => { autosize(); }, [draft, autosize]);
+
+  // The most recent assistant body turn IS the current copy, so revert is
+  // pointless on it — we hide the button there.
+  const latestBodyTurnId = [...turns].reverse().find((t) => t.role === "assistant" && t.channel === "body")?.id ?? null;
+
+  // When the Post channel is active, keep the draft showing the current topic
+  // (so after an auto-generate or a Post regenerate, the box reflects what the
+  // post is actually built on).
+  useEffect(() => {
+    if (channel === "post") setDraft(topic);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topic, channel]);
 
   useEffect(() => {
     feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight, behavior: "smooth" });
@@ -79,9 +101,11 @@ export function PlaygroundClient() {
   }, []);
 
   const generate = useCallback(
-    async (opts?: { keepTopic?: boolean; auto?: boolean; note?: string }) => {
+    async (opts?: { keepTopic?: boolean; auto?: boolean; note?: string; topicOverride?: string }) => {
       const keepTopic = !!opts?.keepTopic;
-      const sendTopic = keepTopic || opts?.auto ? undefined : topic.trim() || undefined;
+      const sendTopic = keepTopic || opts?.auto
+        ? undefined
+        : (opts?.topicOverride ?? topic).trim() || undefined;
       setRedoKind(keepTopic ? "body" : "new");
       setLoading(true);
       setError(null);
@@ -99,7 +123,6 @@ export function PlaygroundClient() {
         }
         setPost(data);
         setTopic(data.topic ?? "");
-        setPostTopic(data.topic ?? "");
         setSaved(false);
         if (data.correctionProposal && (data.correctionProposal.statement || data.correctionProposal.avoid)) {
           setCorrection(data.correctionProposal);
@@ -114,7 +137,6 @@ export function PlaygroundClient() {
         } else {
           setImage(null);
           setSvg(null);
-          setArtDirection("");
         }
         await refreshTurns();
       } finally {
@@ -158,7 +180,6 @@ export function PlaygroundClient() {
             setPost(state.pending);
             setTurns(state.turns ?? []);
             setTopic(state.pending.topic ?? "");
-            setPostTopic(state.pending.topic ?? "");
             if (state.pending.image) setImage(state.pending.image);
             try {
               const sres = await fetch("/api/social/saved");
@@ -184,16 +205,43 @@ export function PlaygroundClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [post?.id]);
 
+  // Start-screen generate (first post from the typed topic).
   const regenerateAll = useCallback(async () => {
     if (loading) return;
-    await generate();
-  }, [loading, generate]);
+    await generate({ topicOverride: topic });
+  }, [loading, generate, topic]);
 
-  const redoBody = useCallback(async () => {
-    if (!post || loading || !bodyNote.trim()) return;
-    await generate({ keepTopic: true, note: bodyNote });
-    setBodyNote("");
-  }, [post, loading, bodyNote, generate]);
+  // Switching the composer channel. "Post" pre-fills the draft with the current
+  // working topic so it's visible and editable; Body/Media start empty.
+  const selectChannel = useCallback(
+    (c: "post" | "body" | "media") => {
+      setChannel(c);
+      setDraft(c === "post" ? topic : "");
+    },
+    [topic],
+  );
+
+  // The single composer send — routes the message by the selected channel.
+  const send = useCallback(async () => {
+    const text = draft.trim();
+    if (!text || loading || svgLoading) return;
+    const ch: Turn["channel"] = channel === "post" ? "topic" : channel;
+    // Optimistically show the user's message immediately. The server response's
+    // refreshTurns() replaces this with the authoritative timeline (which
+    // includes this turn), so there's no duplicate.
+    const optimistic: Turn = { id: `optimistic_${Date.now()}`, role: "user", channel: ch, text, createdAt: new Date().toISOString() };
+    setTurns((prev) => [...prev, optimistic]);
+    setDraft("");
+    if (channel === "post") {
+      await generate({ topicOverride: text });
+    } else if (channel === "body") {
+      if (!post) return;
+      await generate({ keepTopic: true, note: text });
+    } else {
+      if (!post) return;
+      await makeGraphic(post, text);
+    }
+  }, [draft, channel, loading, svgLoading, post, generate, makeGraphic]);
 
   const revert = useCallback(async (turnId: string) => {
     setReverting(turnId);
@@ -211,6 +259,21 @@ export function PlaygroundClient() {
       }
     } finally {
       setReverting(null);
+    }
+  }, []);
+
+  // Inline-edit an assistant body bubble: save the edited copy verbatim.
+  const editTurn = useCallback(async (turnId: string, body: string) => {
+    const res = await fetch("/api/social/train/edit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ turnId, body }),
+    });
+    if (res.ok) {
+      const state = await res.json();
+      setTurns(state.turns ?? []);
+      if (state.pending) setPost(state.pending);
+      setSaved(false);
     }
   }, []);
 
@@ -250,9 +313,8 @@ export function PlaygroundClient() {
     setPost(null);
     setTurns([]);
     setTopic("");
-    setPostTopic("");
-    setBodyNote("");
-    setArtDirection("");
+    setDraft("");
+    setChannel("body");
     setImage(null);
     setSvg(null);
     setCorrection(null);
@@ -275,7 +337,7 @@ export function PlaygroundClient() {
               value={topic}
               placeholder="post focussed on efficiency with LIMS, for senior analysts"
               onChange={(e) => setTopic(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && topic.trim()) { e.preventDefault(); regenerateAll(); } }}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && topic.trim()) { e.preventDefault(); regenerateAll(); } }}
             />
             <div className="prompt-actions">
               <button className="btn ghost" disabled={loading} onClick={() => generate({ auto: true })} title="Let the AI choose the topic">
@@ -292,36 +354,35 @@ export function PlaygroundClient() {
     );
   }
 
+  const busy = loading || svgLoading;
+  const placeholder =
+    channel === "post"
+      ? "Describe the whole post, e.g. \"efficiency for senior analysts, lead with a number\""
+      : channel === "body"
+        ? "Change the copy, e.g. \"punchier hook\", \"results never sit in email\""
+        : "Change the graphic, e.g. \"use a chart\", \"more minimal\"";
+
   return (
-    <div className="pg3">
-      {/* LEFT — composer */}
-      <aside className="pg3-controls">
-        <div className="pg3-head">
+    <div className="pg2">
+      {/* LEFT — the conversation + bottom composer */}
+      <section className="pg2-main">
+        <div className="pg2-head">
           <h1>Playground</h1>
-          <button className="btn ghost small" onClick={startNew} title="Save this and start a fresh post">New</button>
+          <button className="btn ghost small" onClick={startNew} title="Save this and start a fresh post">New post</button>
         </div>
 
-        <section className="sec">
-          <div className="sec-head">Overall</div>
-          <textarea className="topic-box" rows={3} value={topic} placeholder="Topic for the post. Edit it, then Regenerate." onChange={(e) => setTopic(e.target.value)} />
-          <button className="btn full" disabled={loading || !topicDirty} onClick={() => regenerateAll()} title={topicDirty ? "Rebuild body + media from this topic" : "Edit the topic to enable"}>
-            {redoKind === "new" && loading ? "Regenerating…" : "Regenerate post"}
-          </button>
-        </section>
-
-        <section className="sec">
-          <div className="sec-head">Body</div>
-          <textarea
-            className="topic-box"
-            rows={3}
-            value={bodyNote}
-            placeholder='What to change? e.g. "punchier hook", "results never sit in email".'
-            onChange={(e) => setBodyNote(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); redoBody(); } }}
-          />
-          <button className="btn full" disabled={loading || !bodyNote.trim()} onClick={() => redoBody()} title={bodyNote.trim() ? "Rewrite the copy (keeps media)" : "Enter feedback to enable"}>
-            {redoKind === "body" && loading ? "Rewriting…" : "Redo body"}
-          </button>
+        <div className="pg2-chat" ref={feedRef}>
+          {turns.map((t) => (
+            <ChatTurn
+              key={t.id}
+              turn={t}
+              onRevert={revert}
+              onEdit={editTurn}
+              reverting={reverting === t.id}
+              isLatestBody={t.id === latestBodyTurnId}
+            />
+          ))}
+          {busy && <div className="chat-thinking">{svgLoading ? "Designing the graphic…" : redoKind === "body" ? "Rewriting the copy…" : "Writing…"}</div>}
 
           {correction && (
             <div className="factfix">
@@ -349,61 +410,80 @@ export function PlaygroundClient() {
               </div>
             </div>
           )}
-        </section>
+        </div>
 
-        <section className="sec">
-          <div className="sec-head">Media</div>
-          <textarea
-            className="topic-box"
-            rows={2}
-            value={artDirection}
-            placeholder='How should the graphic change? e.g. "use a chart".'
-            onChange={(e) => setArtDirection(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && post) { e.preventDefault(); makeGraphic(post, artDirection.trim() || undefined); } }}
-          />
-          <button className="btn full" disabled={svgLoading || loading || !artDirection.trim()} onClick={() => post && makeGraphic(post, artDirection.trim() || undefined)} title={artDirection.trim() ? "Regenerate the graphic" : "Enter a direction to enable"}>
-            {svgLoading ? "Drawing…" : "Redo media"}
-          </button>
-        </section>
-      </aside>
-
-      {/* CENTER — the conversation (inputs + outputs only) */}
-      <section className="pg3-chat" ref={feedRef}>
-        {turns.map((t) => (
-          <ChatTurn key={t.id} turn={t} onRevert={revert} reverting={reverting === t.id} />
-        ))}
-        {loading && <div className="chat-thinking">{redoKind === "body" ? "Rewriting the copy…" : "Writing…"}</div>}
+        {/* Bottom composer: one box, a Post/Body/Media toggle. */}
+        <div className="composer">
+          <div className="composer-toggle">
+            {(["post", "body", "media"] as const).map((c) => (
+              <button
+                key={c}
+                className={`seg ${channel === c ? "on" : ""}`}
+                onClick={() => selectChannel(c)}
+                title={c === "post" ? "Edit the whole post's topic, then regenerate" : c === "body" ? "Rewrite the copy" : "Regenerate the graphic"}
+              >
+                {c === "post" ? "Post" : c === "body" ? "Body" : "Media"}
+              </button>
+            ))}
+          </div>
+          <div className="composer-row">
+            <textarea
+              ref={composerRef}
+              className="composer-input"
+              rows={1}
+              value={draft}
+              placeholder={placeholder}
+              disabled={busy}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+              }}
+            />
+            <button className="composer-send" disabled={busy || !draft.trim()} onClick={() => send()} title="Send (Enter)">
+              {busy ? "…" : "↑"}
+            </button>
+          </div>
+        </div>
       </section>
 
       {/* RIGHT — live preview + save */}
-      <aside className="pg3-preview">
-        <div className="pg3-preview-head">
+      <aside className="pg2-preview">
+        <div className="pg2-preview-head">
           <span className="eyebrow">Preview</span>
           <button className={`btn small save-standard ${saved ? "is-saved" : ""}`} disabled={saving || saved} onClick={savePost} title="Save this post with its full history">
             {saved ? "★ Saved" : saving ? "Saving…" : "☆ Save post"}
           </button>
         </div>
-        <FeedCard post={post} image={image} svgLoading={svgLoading} />
-        <div className="pg3-dl">
-          {image && <button className="link-btn" onClick={() => downloadDataUrl(image, post.theme, "png")}>Download PNG</button>}
-          {svg && <button className="link-btn" onClick={() => downloadText(svg, post.theme, "svg")}>Download SVG</button>}
-        </div>
-        {post.citations.length > 0 && (
-          <div className="panel-card">
-            <div className="panel-label">Grounded in</div>
-            <div className="chips">
-              {post.citations.slice(0, 6).map((c) => (
-                <Link key={c.itemId} href={`/item/${c.itemId}`} target="_blank" className="chip">{c.title}</Link>
-              ))}
-            </div>
-          </div>
-        )}
+        <FeedCard
+          post={post}
+          image={image}
+          svg={svg}
+          bodyLoading={loading && redoKind !== "new"}
+          rebuilding={loading && redoKind === "new"}
+          svgLoading={svgLoading}
+        />
       </aside>
     </div>
   );
 }
 
-function ChatTurn({ turn, onRevert, reverting }: { turn: Turn; onRevert: (id: string) => void; reverting: boolean }) {
+function ChatTurn({
+  turn,
+  onRevert,
+  onEdit,
+  reverting,
+  isLatestBody,
+}: {
+  turn: Turn;
+  onRevert: (id: string) => void;
+  onEdit: (id: string, body: string) => Promise<void> | void;
+  reverting: boolean;
+  isLatestBody: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+
   if (turn.role === "user") {
     const label = turn.channel === "topic" ? "Topic" : turn.channel === "media" ? "Media" : "Body";
     return (
@@ -417,20 +497,53 @@ function ChatTurn({ turn, onRevert, reverting }: { turn: Turn; onRevert: (id: st
   // assistant
   const isBody = turn.channel === "body";
   const hasBefore = isBody && typeof turn.prevBody === "string" && turn.prevBody.trim().length > 0 && turn.prevBody !== turn.body;
+  const copy = turn.body ? displayBody(turn.body) : "";
+
+  function beginEdit() {
+    setDraft(copy);
+    setEditing(true);
+  }
+  async function update() {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await onEdit(turn.id, draft);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Editable copy block — click to edit, "Update" sits at the bottom-right.
+  const editableCopy = (text: string, className: string) =>
+    editing ? (
+      <div className="ct-edit">
+        <textarea className="ct-edit-area" value={draft} autoFocus onChange={(e) => setDraft(e.target.value)} />
+        <div className="ct-edit-actions">
+          <button className="btn ghost small" onClick={() => setEditing(false)} disabled={saving}>Cancel</button>
+          <button className="btn small" onClick={update} disabled={saving || !draft.trim()}>{saving ? "Updating…" : "Update"}</button>
+        </div>
+      </div>
+    ) : (
+      <div className={`${className} ct-editable`} role="button" tabIndex={0} title="Click to edit this copy" onClick={beginEdit}>
+        {text}
+      </div>
+    );
+
   return (
     <div className="ct ct-ai">
       <div className="ct-role">AI</div>
       <div className="ct-ai-body">
         <div className="ct-ai-head">
           <span className="ct-ai-label">{turn.text}</span>
-          {isBody && turn.body && (
+          {isBody && turn.body && !isLatestBody && !editing && (
             <button className="ct-revert" disabled={reverting} onClick={() => onRevert(turn.id)} title="Make this version the current copy">
               {reverting ? "Reverting…" : "↩ Revert to this"}
             </button>
           )}
         </div>
         {isBody && (
-          hasBefore ? (
+          hasBefore && !editing ? (
             <div className="ct-diff">
               <div className="ct-diff-col ct-before">
                 <div className="ct-diff-h">Before</div>
@@ -438,11 +551,13 @@ function ChatTurn({ turn, onRevert, reverting }: { turn: Turn; onRevert: (id: st
               </div>
               <div className="ct-diff-col ct-after">
                 <div className="ct-diff-h">After</div>
-                <div className="ct-diff-text">{displayBody(turn.body!)}</div>
+                <div className="ct-diff-text ct-editable" role="button" tabIndex={0} title="Click to edit this copy" onClick={beginEdit}>
+                  {copy}
+                </div>
               </div>
             </div>
           ) : (
-            turn.body && <div className="ct-ai-copy">{displayBody(turn.body)}</div>
+            turn.body && editableCopy(copy, "ct-ai-copy")
           )
         )}
         {turn.channel === "media" && turn.image && (
@@ -482,13 +597,31 @@ function downloadText(content: string, theme: string, ext: string) {
   URL.revokeObjectURL(a.href);
 }
 
-function FeedCard({ post, image, svgLoading }: { post: Post; image: string | null; svgLoading: boolean }) {
+function FeedCard({
+  post,
+  image,
+  svg,
+  svgLoading,
+  bodyLoading = false,
+  rebuilding = false,
+}: {
+  post: Post;
+  image: string | null;
+  svg: string | null;
+  svgLoading: boolean;
+  bodyLoading?: boolean;
+  rebuilding?: boolean;
+}) {
   const tags = post.hashtags.map((h) => (h.startsWith("#") ? h : `#${h}`)).join(" ");
   const cleanBody = displayBody(post.body);
   const full = tags ? `${cleanBody}\n\n${tags}` : cleanBody;
+  // During a body rewrite (or full rebuild) the copy is stale — show a skeleton.
+  const copyLoading = bodyLoading || rebuilding;
+  // Media is stale during its own redraw, or during a full post rebuild.
+  const mediaLoading = svgLoading || rebuilding;
 
   return (
-    <div className="feed">
+    <div className={`feed ${rebuilding ? "feed-rebuilding" : ""}`}>
       <div className="feed-top">
         <div className="avatar">{AUTHOR.initials}</div>
         <div className="who">
@@ -498,13 +631,32 @@ function FeedCard({ post, image, svgLoading }: { post: Post; image: string | nul
         </div>
         <button className="follow">＋ Follow</button>
       </div>
-      <div className="feed-body">{full}</div>
-      <div className="feed-image">
-        {image ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img className="feed-svg" src={image} alt="Post graphic" />
+      <div className="feed-body">
+        {copyLoading ? (
+          <div className="sk-lines">
+            <span className="sk-line" style={{ width: "92%" }} />
+            <span className="sk-line" style={{ width: "78%" }} />
+            <span className="sk-line" style={{ width: "85%" }} />
+            <span className="sk-line" style={{ width: "60%" }} />
+          </div>
         ) : (
-          <div className="feed-svg skeleton">{svgLoading ? "Designing graphic…" : "No graphic"}</div>
+          full
+        )}
+      </div>
+      <div className="feed-image">
+        {mediaLoading ? (
+          <div className="feed-svg skeleton pulsing"><span className="sk-spinner" />Designing graphic…</div>
+        ) : image ? (
+          <>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img className="feed-svg" src={image} alt="Post graphic" />
+            <div className="feed-dl">
+              <button className="feed-dl-btn" onClick={() => downloadDataUrl(image, post.theme, "png")}>PNG</button>
+              {svg && <button className="feed-dl-btn" onClick={() => downloadText(svg, post.theme, "svg")}>SVG</button>}
+            </div>
+          </>
+        ) : (
+          <div className="feed-svg skeleton">No graphic</div>
         )}
       </div>
       <div className="feed-stats">

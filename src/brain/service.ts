@@ -106,7 +106,7 @@ import {
   type SavedPosts,
   type SavePostInput,
 } from "./social/saved-posts";
-import { applyStudioCorrection, recordMediaRevision, saveCurrentPost, openSavedPost, revertToTurn, type ConfirmCorrectionRouteInput } from "./social/training";
+import { applyStudioCorrection, recordMediaRevision, saveCurrentPost, openSavedPost, revertToTurn, editTurnBody, type ConfirmCorrectionRouteInput } from "./social/training";
 import { loadAudienceModel, addAudienceNotes, updateAudienceNote, removeAudienceNote, type AudienceModel } from "./social/audience";
 import {
   loadLabFacts,
@@ -197,6 +197,8 @@ export interface BrainService {
   openSavedPost(savedId: string): Promise<TrainingState>;
   // revert the current post's body to an earlier turn's output
   revertToTurn(turnId: string): Promise<TrainingState>;
+  // manually edit an assistant body turn verbatim (inline edit in chat)
+  editTurnBody(turnId: string, body: string): Promise<TrainingState>;
   // AI-authored post graphic (non-templated SVG)
   generateGraphic(input: GenerateGraphicInput & { postId?: string; record?: boolean }): Promise<GraphicResult>;
 }
@@ -643,6 +645,10 @@ export class DefaultBrainService implements BrainService {
 
   async revertToTurn(turnId: string): Promise<TrainingState> {
     return revertToTurn(this.workspaceId, turnId);
+  }
+
+  async editTurnBody(turnId: string, body: string): Promise<TrainingState> {
+    return editTurnBody(this.workspaceId, turnId, body);
   }
 
   async getStyleGuide(): Promise<StyleGuide> {

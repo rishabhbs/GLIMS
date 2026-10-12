@@ -343,7 +343,8 @@ const ANGLES = [
 // generation time. This tail only describes the training TASK + output shape.
 const TRAIN_TASK = `TASK: Write ONE LinkedIn post for Sampleify. This is a training round, the user will rate it and teach you their taste.
 Follow the GLOBAL WRITING INSTRUCTIONS above and the LEARNED STYLE GUIDE if present. Study the RATED EXAMPLES: write MORE like the high-rated ones, and AVOID what made the low-rated ones weak.
-OUTPUT ONLY JSON: { "theme": string, "body": string, "hashtags": string[], "citationMarkers": number[] }`;
+Also return "topic": a single clear sentence describing what this post is about and who it's for, phrased as a prompt a person would write (e.g. "Lab efficiency and faster result handoffs, aimed at senior analysts"). This is the working prompt the user will see and can edit.
+OUTPUT ONLY JSON: { "topic": string, "theme": string, "body": string, "hashtags": string[], "citationMarkers": number[] }`;
 
 /**
  * Build the full training system prompt from the editable global instructions
@@ -475,12 +476,16 @@ export async function generateTrainingPost(input: GenerateTrainingInput, deps: T
   );
 
   let theme = angle;
+  // The readable working topic. Keep the user's typed topic verbatim; otherwise
+  // use the model's returned topic (falls back to the angle/theme below).
+  let modelTopic = "";
   let body = "";
   let hashtags: string[] = [];
   let markers: number[] = [];
   try {
     const raw = parseJsonLoose(res.text) as Record<string, unknown>;
     if (typeof raw.theme === "string" && raw.theme.trim()) theme = raw.theme.trim();
+    if (typeof raw.topic === "string" && raw.topic.trim()) modelTopic = raw.topic.trim();
     body = String(raw.body ?? "").trim();
     hashtags = Array.isArray(raw.hashtags) ? (raw.hashtags as unknown[]).map(String).filter(Boolean) : [];
     markers = Array.isArray(raw.citationMarkers)
@@ -586,9 +591,14 @@ export async function generateTrainingPost(input: GenerateTrainingInput, deps: T
     correctionProposal = await routeCorrection(noteOverride, state.pending.body, deps.provider);
   }
 
+  // The working topic shown to the user: keep what they typed / the kept topic;
+  // but when the AI auto-picked (a raw ANGLE), prefer the model's readable topic.
+  const usedTypedTopic = Boolean(input.keepTopic || typedTopic);
+  const displayTopic = usedTypedTopic ? topic : (modelTopic || theme || topic);
+
   const post: TrainingPost = {
     id: `t_${Date.now().toString(36)}`,
-    topic,
+    topic: displayTopic,
     theme,
     body,
     hashtags,
@@ -611,10 +621,11 @@ export async function generateTrainingPost(input: GenerateTrainingInput, deps: T
     appended.push({ id: turnId(), role: "assistant", channel: "body", text: "Rewrote the copy", body, prevBody, createdAt: ts });
     state.turns = [...state.turns, ...appended].slice(-40);
   } else {
-    // New post: start the conversation with the topic prompt + first output.
-    const topicPrompt = topic.trim();
+    // New post: start the conversation with the (readable) topic + first output.
+    // Prefix auto-chosen topics so it's clear the AI picked them.
+    const topicTurnText = usedTypedTopic ? displayTopic : `(AI chose) ${displayTopic}`;
     state.turns = [
-      { id: turnId(), role: "user", channel: "topic", text: topicPrompt || "Auto-generated topic", createdAt: ts },
+      { id: turnId(), role: "user", channel: "topic", text: topicTurnText || "Auto-generated topic", createdAt: ts },
       { id: turnId(), role: "assistant", channel: "body", text: "Drafted the post", body, prevBody: "", createdAt: ts },
     ];
   }
@@ -648,6 +659,29 @@ export async function revertToTurn(workspaceId: string, turnId_: string): Promis
     { id: turnId(), role: "assistant", channel: "body", text: "Restored earlier copy", body: target.body, prevBody, createdAt: ts },
   ];
   state.turns = [...state.turns, ...appended].slice(-40);
+  await saveTraining(state);
+  return state;
+}
+
+/**
+ * Manually edit an assistant body turn's text VERBATIM (inline edit in the
+ * chat). No model call: the edited text becomes the current copy exactly as
+ * typed, with only the deterministic typographic scrubs applied. The edited
+ * turn's stored body is updated so the bubble reflects it.
+ */
+export async function editTurnBody(workspaceId: string, turnId_: string, newBody: string): Promise<TrainingState> {
+  const state = await loadTraining(workspaceId);
+  if (!state.pending) throw new Error("no active post");
+  const target = state.turns.find((t) => t.id === turnId_ && t.role === "assistant" && t.channel === "body");
+  if (!target) throw new Error("cannot edit that turn");
+
+  const cleaned = stripCitationMarkers(stripDashes(newBody.trim()));
+  if (!cleaned) return state;
+
+  // Update the edited turn's body in place.
+  target.body = cleaned;
+  // The edited copy becomes the current post body.
+  state.pending.body = cleaned;
   await saveTraining(state);
   return state;
 }
