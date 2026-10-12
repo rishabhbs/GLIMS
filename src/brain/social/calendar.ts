@@ -13,7 +13,17 @@ import type { Repositories } from "@/db/repositories";
 import type { ModelProvider } from "@/providers";
 import { retrieveForQuestion, type GroundingItem } from "../retrieval/ground";
 import { loadStyleGuide, addStyleRules, renderStyleGuide } from "./style-guide";
-import { stripDashes } from "./training";
+import { stripDashes, stripCitationMarkers } from "./training";
+import {
+  loadGlobalInstructions,
+  renderGlobalInstructions,
+  detectInstructionConflict,
+  updateGlobalInstruction,
+  type InstructionConflict,
+} from "./global-instructions";
+import { loadSavedPosts, renderSavedExemplars } from "./saved-posts";
+import { loadLabFacts, renderLabFacts } from "./lab-facts";
+import { loadAudienceModel, renderAudienceModel } from "./audience";
 
 export interface CalendarDeps {
   repos: Repositories;
@@ -93,6 +103,15 @@ export interface RevisePostResult {
   citations: CalCitation[];
   /** A durable style rule learned from this revision, if any (applied to all future posts). */
   learnedRule: string | null;
+  /**
+   * Set when the distilled style rule CONTRADICTS a global instruction. The
+   * rule is NOT applied; the UI must ask the user whether to keep it to this
+   * post only (the revision already reflects it) or update the global
+   * instruction. Resolved via resolveCalendarConflict.
+   */
+  conflict: InstructionConflict | null;
+  /** The distilled candidate rule, echoed back so the UI can resolve the conflict. */
+  candidateRule: string | null;
 }
 
 // ── grounding helpers ─────────────────────────────────────────────────────
@@ -214,17 +233,10 @@ function maxSimilarity(text: string, against: string[]): number {
 
 const DUP_THRESHOLD = 0.3; // bigram-Jaccard above this ≈ "same thing, different words"
 
-// ── anti-slop voice rules (shared by draft + revise) ────────────────────────
-// A human lab owner must want to read this. Specific beats generic, every time.
-const VOICE_RULES = `WRITE LIKE A HUMAN A LAB OWNER WOULD ACTUALLY READ. Avoid generic AI "slop". Non-negotiable:
-- Specific beats general. If a line could appear on any competitor's page, rewrite it from a concrete, real detail (a named workflow stage, an actual setting, a real step a lab does). High-entropy, not smooth filler.
-- BANNED sentence shapes: "It's not X, it's Y" (negative parallelism); "Not X. Not Y. Just Z."; rhetorical question-then-answer ("The result? Devastating."); repeating the same sentence opener; forcing everything into threes; "-ing" tails that imply significance ("...reflecting broader trends"); fake ranges ("from X to Y" where they aren't a scale).
-- BANNED words: delve, utilize, leverage, robust, streamline, harness, foster, enhance, underscore, pivotal, crucial, intricate, testament, groundbreaking, transformative, innovative, comprehensive, seamless, revolutionize, game-changing, unlock, empower, elevate, supercharge, best-in-class, industry-leading, cutting-edge.
-- BANNED openers/transitions: "Here's the thing", "Here's the kicker", "Here's what most people miss", "Imagine a world where", "Let's dive in", "Let's unpack", "It's worth noting", "Importantly".
-- BANNED marketing fluff: "streamline your workflow", "boost efficiency", "end-to-end solution", "take your lab to the next level", "transform your operations", vague social proof like "trusted by thousands". Name the real number or the real capability, or say nothing.
-- BANNED CTA clichés: "Don't miss out", "Start your journey", "Take the next step", "Experience the difference". If you close, make it plain and specific (or skip the CTA).
-- Max 2 em-dashes in a post. Don't start every line with a bold label. Don't write entirely in one-sentence paragraphs.
-- Sound like one practitioner talking to another: concrete, a little blunt, no hype. The facts still come ONLY from the knowledge items.`;
+// NOTE: The human-voice / anti-slop policy that used to live here as the
+// hardcoded `VOICE_RULES` literal is now EDITABLE GLOBAL INSTRUCTIONS (see
+// ./global-instructions). It is rendered and prepended to every system prompt
+// below. The deterministic slop-scrub patterns remain as a code backstop.
 
 // Patterns that signal AI slop; used for a post-generation scrub.
 const SLOP_WORDS = /\b(delve|utiliz(e|ing)|leverag(e|ing)|robust|streamlin|harness|foster|enhanc|underscore|pivotal|crucial|intricate|testament|groundbreaking|transformative|innovativ|comprehensive|seamless|revolutioniz|game.?chang|best.?in.?class|industry.?leading|cutting.?edge|supercharge|unlock your|empower|elevate your)\b/i;
@@ -245,16 +257,26 @@ function slopHits(text: string): string[] {
 
 // ── operations ────────────────────────────────────────────────────────────
 
-const PLAN_SYSTEM = `You plan a LinkedIn content calendar for "Sampleify", a LIMS (lab information management system).
+// Task tails. The base writing policy comes from the editable GLOBAL
+// INSTRUCTIONS, prepended at each call site via `sys()`.
+const PLAN_TASK = `TASK: Plan a LinkedIn content calendar for Sampleify.
 You are given a set of DATE SLOTS and grounded KNOWLEDGE items. Assign each slot a focused theme + angle drawn from the knowledge.
 RULES:
 - Base every theme/angle on the KNOWLEDGE items (real features, workflows, metrics, customers, positioning). Do not invent.
-- Build a COHESIVE PLAN, not a random pile: sequence themes so the month tells a progression (e.g. problem → capability → proof → how-it-works → outcomes). Group related ideas into a sensible narrative arc across the weeks.
+- Build a COHESIVE PLAN, not a random pile: sequence themes so the month tells a progression (e.g. problem then capability then proof then how-it-works then outcomes). Group related ideas into a sensible narrative arc across the weeks.
 - Each slot must be DISTINCT. Never assign two slots the same theme or the same angle. Spread coverage across features, workflows, metrics, customer proof, positioning, and limitations.
-- If an ALREADY COVERED list is provided, do NOT reuse those themes/angles — pick genuinely new territory.
+- If an ALREADY COVERED list is provided, do NOT reuse those themes/angles, pick genuinely new territory.
 - Keep "theme" to 2-5 words and "angle" to one short sentence (the hook idea). Do NOT write full post copy here.
 OUTPUT: ONLY JSON (no prose, no fences): { "slots": [ { "id": string, "theme": string, "angle": string } ] }
 Return one object per provided slot id, preserving the ids.`;
+
+/**
+ * Prepend the editable global writing policy (and real-world lab facts, which
+ * are grounding) to a task tail to form a system prompt.
+ */
+function sys(globalBlock: string, task: string, factsBlock = ""): string {
+  return [globalBlock, factsBlock, task].filter(Boolean).join("\n\n");
+}
 
 export async function planCalendar(input: PlanCalendarInput, deps: CalendarDeps): Promise<PlanCalendarResult> {
   const dates = eachDate(input.startDate, input.endDate, input.weekdaysOnly);
@@ -282,6 +304,7 @@ export async function planCalendar(input: PlanCalendarInput, deps: CalendarDeps)
 
   const knowledge = buildKnowledgeContext(items);
   const styleBlock = renderStyleGuide(await loadStyleGuide(deps.workspaceId));
+  const globalBlock = renderGlobalInstructions(await loadGlobalInstructions(deps.workspaceId));
   const slotList = slots.map((s) => ({ id: s.id, date: s.date, index: s.index }));
   const coveredBlock = (input.existing ?? []).length
     ? `ALREADY COVERED — do NOT reuse these themes/angles:\n${(input.existing ?? [])
@@ -292,7 +315,7 @@ export async function planCalendar(input: PlanCalendarInput, deps: CalendarDeps)
 
   const res = await deps.provider.chat(
     [
-      { role: "system", content: PLAN_SYSTEM },
+      { role: "system", content: sys(globalBlock, PLAN_TASK) },
       { role: "user", content: user },
     ],
     { temperature: 0.5, maxTokens: 16000 },
@@ -320,13 +343,9 @@ export async function planCalendar(input: PlanCalendarInput, deps: CalendarDeps)
   };
 }
 
-const DRAFT_SYSTEM = `You write ready-to-publish LinkedIn posts for "Sampleify", a LIMS, grounded ONLY in the provided KNOWLEDGE.
-
-${VOICE_RULES}
-
+const DRAFT_TASK = `TASK: Write ready-to-publish LinkedIn posts for Sampleify, following the GLOBAL WRITING INSTRUCTIONS above.
 RULES:
-- Every factual claim MUST be backed by a knowledge item; list those marker numbers in "citationMarkers". Never invent capabilities, metrics, or customer results.
-- FORMAT LIKE A REAL LINKEDIN POST: a one-line hook, then a blank line, then short 1-2 sentence paragraphs each separated by a BLANK LINE. Use literal \\n\\n between paragraphs in the "body" string. Never return a single wall of text.
+- Every factual claim MUST be backed by a knowledge item; list those marker numbers in "citationMarkers".
 - Each post must be DISTINCT from the others in this batch AND from any ALREADY PUBLISHED posts provided. Do not reuse the same hook, opening line, framing, or metric-as-lead. The product is the same, so overlap in facts is fine, but every post says something new from a different angle. No "same thing, different words".
 - Provide 3-5 relevant "hashtags" (without the # is fine).
 - Honor the requested length: "short" ~ 350-600 chars, "standard" ~ 700-1100 chars.
@@ -342,6 +361,11 @@ export async function draftPosts(input: DraftPostsInput, deps: CalendarDeps): Pr
   const validMarkers = new Set(items.map((i) => i.marker));
   const knowledge = buildKnowledgeContext(items);
   const styleBlock = renderStyleGuide(await loadStyleGuide(deps.workspaceId));
+  const globalBlock = renderGlobalInstructions(await loadGlobalInstructions(deps.workspaceId));
+  const savedBlock = renderSavedExemplars(await loadSavedPosts(deps.workspaceId));
+  const labFactsBlock = renderLabFacts(await loadLabFacts(deps.workspaceId));
+  const audienceBlock = renderAudienceModel(await loadAudienceModel(deps.workspaceId));
+  const draftSystem = sys(globalBlock, DRAFT_TASK, [labFactsBlock, audienceBlock].filter(Boolean).join("\n\n"));
   const slotList = input.slots.map((s) => ({ id: s.id, date: s.date, theme: s.theme, angle: s.angle }));
   const existingBodies = input.existingBodies ?? [];
   const publishedBlock = existingBodies.length
@@ -349,11 +373,11 @@ export async function draftPosts(input: DraftPostsInput, deps: CalendarDeps): Pr
         .map((b, i) => `--- published ${i + 1} ---\n${b}`)
         .join("\n")}\n\n`
     : "";
-  const user = `BRIEF: ${input.brief}\nLENGTH: ${input.length}\n\n${styleBlock ? styleBlock + "\n\n" : ""}${publishedBlock}KNOWLEDGE (cite by [n] marker number):\n${knowledge}\n\nWRITE A POST FOR EACH SLOT:\n${JSON.stringify(slotList)}`;
+  const user = `BRIEF: ${input.brief}\nLENGTH: ${input.length}\n\n${savedBlock ? savedBlock + "\n\n" : ""}${styleBlock ? styleBlock + "\n\n" : ""}${publishedBlock}KNOWLEDGE (cite by [n] marker number):\n${knowledge}\n\nWRITE A POST FOR EACH SLOT:\n${JSON.stringify(slotList)}`;
 
   const res = await deps.provider.chat(
     [
-      { role: "system", content: DRAFT_SYSTEM },
+      { role: "system", content: draftSystem },
       { role: "user", content: user },
     ],
     { temperature: 0.6, maxTokens: 16000 },
@@ -374,7 +398,7 @@ export async function draftPosts(input: DraftPostsInput, deps: CalendarDeps): Pr
     // (1) Anti-slop scrub.
     const hits = slopHits(d.body);
     if (hits.length) {
-      const fixed = await rewriteNoSlop(d.body, hits, slot, knowledge, styleBlock, input.length, validMarkers, deps);
+      const fixed = await rewriteNoSlop(d.body, hits, slot, knowledge, styleBlock, draftSystem, input.length, validMarkers, deps);
       if (fixed && slopHits(fixed.body).length < hits.length) {
         drafts[i] = fixed;
         dedupeNotes.push(`Rewrote ${d.id} to remove AI-slop (${hits.join(", ")}).`);
@@ -384,7 +408,7 @@ export async function draftPosts(input: DraftPostsInput, deps: CalendarDeps): Pr
     // (2) De-dup against corpus.
     let sim = maxSimilarity(drafts[i].body, corpus);
     if (sim > DUP_THRESHOLD) {
-      const redraft = await redraftDistinct(drafts[i].body, slot, knowledge, styleBlock, corpus, input.length, validMarkers, deps);
+      const redraft = await redraftDistinct(drafts[i].body, slot, knowledge, styleBlock, draftSystem, corpus, input.length, validMarkers, deps);
       if (redraft && maxSimilarity(redraft.body, corpus) < sim) {
         drafts[i] = redraft;
         dedupeNotes.push(`Redrafted ${d.id} — original was too similar to an existing post.`);
@@ -416,7 +440,7 @@ function parseDrafts(text: string, validMarkers: Set<number>): DraftPostsResult[
         : [];
       drafts.push({
         id: String(r.id ?? ""),
-        body: stripDashes(String(r.body ?? "").trim()),
+        body: stripCitationMarkers(stripDashes(String(r.body ?? "").trim())),
         hashtags: Array.isArray(r.hashtags) ? (r.hashtags as unknown[]).map(String).filter(Boolean) : [],
         citationMarkers: markers,
       });
@@ -434,6 +458,7 @@ async function rewriteNoSlop(
   slot: Pick<CalSlot, "id" | "date" | "theme" | "angle"> | undefined,
   knowledge: string,
   styleBlock: string,
+  draftSystem: string,
   length: "short" | "standard",
   validMarkers: Set<number>,
   deps: CalendarDeps,
@@ -446,14 +471,14 @@ async function rewriteNoSlop(
     `OUTPUT ONLY JSON: { "body": string, "hashtags": string[], "citationMarkers": number[] }`;
   const res = await deps.provider.chat(
     [
-      { role: "system", content: DRAFT_SYSTEM },
+      { role: "system", content: draftSystem },
       { role: "user", content: user },
     ],
     { temperature: 0.7, maxTokens: 2000 },
   );
   try {
     const raw = parseJsonLoose(res.text) as Record<string, unknown>;
-    const body = String(raw.body ?? "").trim();
+    const body = stripCitationMarkers(stripDashes(String(raw.body ?? "").trim()));
     if (!body) return null;
     const markers = Array.isArray(raw.citationMarkers)
       ? (raw.citationMarkers as unknown[]).map(Number).filter((m) => Number.isFinite(m) && validMarkers.has(m))
@@ -475,6 +500,7 @@ async function redraftDistinct(
   slot: Pick<CalSlot, "id" | "date" | "theme" | "angle"> | undefined,
   knowledge: string,
   styleBlock: string,
+  draftSystem: string,
   corpus: string[],
   length: "short" | "standard",
   validMarkers: Set<number>,
@@ -490,7 +516,7 @@ async function redraftDistinct(
     `OUTPUT ONLY JSON: { "body": string, "hashtags": string[], "citationMarkers": number[] }`;
   const res = await deps.provider.chat(
     [
-      { role: "system", content: DRAFT_SYSTEM },
+      { role: "system", content: draftSystem },
       { role: "user", content: user },
     ],
     { temperature: 0.8, maxTokens: 2000 },
@@ -500,7 +526,7 @@ async function redraftDistinct(
     const markers = Array.isArray(raw.citationMarkers)
       ? (raw.citationMarkers as unknown[]).map(Number).filter((m) => Number.isFinite(m) && validMarkers.has(m))
       : [];
-    const body = String(raw.body ?? "").trim();
+    const body = stripCitationMarkers(stripDashes(String(raw.body ?? "").trim()));
     if (!body) return null;
     return {
       id: slot?.id ?? "",
@@ -513,15 +539,11 @@ async function redraftDistinct(
   }
 }
 
-const REVISE_SYSTEM = `You revise ONE LinkedIn post for "Sampleify" (a LIMS) per the user's instruction, keeping it grounded ONLY in the KNOWLEDGE. You also LEARN the user's durable style preference from their instruction.
-
-${VOICE_RULES}
-
+const REVISE_TASK = `TASK: Revise ONE LinkedIn post for Sampleify per the user's instruction, following the GLOBAL WRITING INSTRUCTIONS above. You also LEARN the user's durable style preference from their instruction.
 RULES:
 - Apply the instruction precisely; change only what's asked, keep the rest.
 - Follow the LEARNED STYLE GUIDE if present (the user already taught these).
-- Every factual claim MUST stay backed by a knowledge marker (citationMarkers). Never invent.
-- Keep it publishable LinkedIn copy with line breaks.
+- Every factual claim MUST stay backed by a knowledge marker (citationMarkers).
 - Also distill the instruction into a GENERAL, REUSABLE style rule that should apply to ALL future posts (not just this one). Phrase it as a durable guideline, e.g. "Lead with the problem before naming the product", "Avoid exclamation points", "End with a soft, non-pushy CTA". If the instruction was purely a one-off content fix with no reusable style lesson, return an empty "styleRule".
 OUTPUT: ONLY JSON (no prose, no fences): { "body": string, "hashtags": string[], "citationMarkers": number[], "styleRule": string }`;
 
@@ -530,11 +552,15 @@ export async function revisePost(input: RevisePostInput, deps: CalendarDeps): Pr
   const validMarkers = new Set(items.map((i) => i.marker));
   const knowledge = buildKnowledgeContext(items);
   const styleBlock = renderStyleGuide(await loadStyleGuide(deps.workspaceId));
+  const globalBlock = renderGlobalInstructions(await loadGlobalInstructions(deps.workspaceId));
+  const labFactsBlock = renderLabFacts(await loadLabFacts(deps.workspaceId));
+  const audienceBlock = renderAudienceModel(await loadAudienceModel(deps.workspaceId));
+  const groundingBlock = [labFactsBlock, audienceBlock].filter(Boolean).join("\n\n");
   const user = `${styleBlock ? styleBlock + "\n\n" : ""}KNOWLEDGE (cite by [n]):\n${knowledge}\n\nCURRENT POST:\n${input.slot.body}\n\nCURRENT HASHTAGS: ${input.slot.hashtags.join(", ")}\n\nINSTRUCTION:\n${input.instruction}`;
 
   const res = await deps.provider.chat(
     [
-      { role: "system", content: REVISE_SYSTEM },
+      { role: "system", content: sys(globalBlock, REVISE_TASK, groundingBlock) },
       { role: "user", content: user },
     ],
     { temperature: 0.6, maxTokens: 4000 },
@@ -546,7 +572,7 @@ export async function revisePost(input: RevisePostInput, deps: CalendarDeps): Pr
   let styleRule = "";
   try {
     const raw = parseJsonLoose(res.text) as Record<string, unknown>;
-    if (typeof raw.body === "string" && raw.body.trim()) body = stripDashes(raw.body.trim());
+    if (typeof raw.body === "string" && raw.body.trim()) body = stripCitationMarkers(stripDashes(raw.body.trim()));
     if (Array.isArray(raw.hashtags)) hashtags = (raw.hashtags as unknown[]).map(String).filter(Boolean);
     if (Array.isArray(raw.citationMarkers)) {
       markers = (raw.citationMarkers as unknown[]).map(Number).filter((m) => Number.isFinite(m) && validMarkers.has(m));
@@ -556,12 +582,71 @@ export async function revisePost(input: RevisePostInput, deps: CalendarDeps): Pr
     // keep original on parse failure
   }
 
-  // LEARN: persist the distilled rule so it applies to all future posts.
+  // LEARN: before persisting the distilled rule to the durable style guide,
+  // check it against the editable GLOBAL INSTRUCTIONS. If it contradicts one,
+  // we do NOT apply it silently. The revised body already reflects the one-off
+  // instruction (that's fine, it's this post), but the DURABLE rule is held
+  // back and surfaced so the user chooses: keep it to this post only, or update
+  // the global instruction.
   let learnedRule: string | null = null;
+  let conflict: InstructionConflict | null = null;
+  let candidateRule: string | null = null;
   if (styleRule) {
-    await addStyleRules(deps.workspaceId, [{ rule: styleRule, source: input.instruction }]);
-    learnedRule = styleRule;
+    const gi = await loadGlobalInstructions(deps.workspaceId);
+    conflict = await detectInstructionConflict(styleRule, gi, deps.provider);
+    if (conflict) {
+      candidateRule = styleRule; // not applied; await user's decision
+    } else {
+      await addStyleRules(deps.workspaceId, [{ rule: styleRule, source: input.instruction }]);
+      learnedRule = styleRule;
+    }
   }
 
-  return { id: input.slot.id, body, hashtags, citationMarkers: markers, citations: toCitations(items, markers), learnedRule };
+  return {
+    id: input.slot.id,
+    body,
+    hashtags,
+    citationMarkers: markers,
+    citations: toCitations(items, markers),
+    learnedRule,
+    conflict,
+    candidateRule,
+  };
+}
+
+export type CalendarConflictResolution = "this_post_only" | "update_global";
+
+export interface ResolveCalendarConflictInput {
+  resolution: CalendarConflictResolution;
+  candidateRule: string;
+  instruction: string;
+  /** Required for "update_global": the global instruction to rewrite. */
+  instructionId?: string;
+  /** New text for the global instruction. If omitted, the candidate is appended. */
+  newInstructionText?: string;
+}
+
+/**
+ * Resolve a revise-time conflict.
+ *  - "this_post_only": do nothing durable. The revised body already reflects
+ *     the instruction for this one post; we simply don't learn a global rule.
+ *  - "update_global": rewrite the conflicting global instruction (and record
+ *     the rule in the style guide for provenance).
+ */
+export async function resolveCalendarConflict(
+  input: ResolveCalendarConflictInput,
+  deps: CalendarDeps,
+): Promise<{ ok: true; applied: CalendarConflictResolution }> {
+  if (input.resolution === "this_post_only") {
+    return { ok: true, applied: "this_post_only" };
+  }
+  if (!input.instructionId) throw new Error("instructionId is required to update a global instruction");
+  const gi = await loadGlobalInstructions(deps.workspaceId);
+  const existing = gi.instructions.find((i) => i.id === input.instructionId);
+  const text =
+    input.newInstructionText?.trim() ||
+    (existing ? `${existing.text} ${input.candidateRule.trim()}` : input.candidateRule.trim());
+  await updateGlobalInstruction(deps.workspaceId, input.instructionId, { text });
+  await addStyleRules(deps.workspaceId, [{ rule: input.candidateRule, source: input.instruction }]);
+  return { ok: true, applied: "update_global" };
 }

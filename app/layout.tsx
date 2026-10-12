@@ -30,12 +30,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <div className="app-shell">
           <aside className="sidebar">
-            <div className="brand">
-              <span>LIMS</span>
-              <span className="dot">Brain</span>
-            </div>
+            <div className="brand-mark" title="LIMS Brain">LB</div>
             <Nav />
-            <div className="phase-badge">Sampleify · Phase 1</div>
           </aside>
           <main className="content">{children}</main>
         </div>

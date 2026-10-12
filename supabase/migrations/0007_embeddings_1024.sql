@@ -11,14 +11,22 @@
 drop index if exists idx_source_chunks_embedding;
 drop index if exists idx_knowledge_items_embedding;
 
--- 2. Clear incompatible vectors, then change the column type to vector(1024).
---    (ALTER TYPE on a populated pgvector column with a different dim would fail,
---     so we null the data first.)
-update source_chunks   set embedding = null where embedding is not null;
-update knowledge_items set embedding = null where embedding is not null;
-
-alter table source_chunks   alter column embedding type vector(1024);
-alter table knowledge_items alter column embedding type vector(1024);
+-- 2. One-time switch to vector(1024). Only null embeddings when the column is
+--    STILL the old 1536 dim — otherwise this is a no-op, so re-running the
+--    migration never wipes current (already-1024) embeddings.
+do $$
+declare dim int;
+begin
+  select atttypmod into dim from pg_attribute
+    where attrelid = 'knowledge_items'::regclass and attname = 'embedding';
+  -- pgvector stores dimension in atttypmod directly (e.g. 1536 or 1024).
+  if dim is distinct from 1024 then
+    update source_chunks   set embedding = null where embedding is not null;
+    update knowledge_items set embedding = null where embedding is not null;
+    alter table source_chunks   alter column embedding type vector(1024);
+    alter table knowledge_items alter column embedding type vector(1024);
+  end if;
+end $$;
 
 -- 3. Recreate the HNSW cosine indexes at the new dimension.
 create index if not exists idx_source_chunks_embedding

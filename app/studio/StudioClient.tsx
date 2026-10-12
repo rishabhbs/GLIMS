@@ -480,6 +480,12 @@ function Composer(props: {
   const [instruction, setInstruction] = useState("");
   const [revising, setRevising] = useState(false);
   const [drafting, setDrafting] = useState(false);
+  const [reviseConflict, setReviseConflict] = useState<{
+    candidateRule: string;
+    instruction: string;
+    conflict: { instructionId: string; instructionTitle: string; instructionText: string; explanation: string };
+  } | null>(null);
+  const [resolvingConflict, setResolvingConflict] = useState(false);
 
   const cited = props.citations.filter((c) => slot.citationMarkers.includes(c.marker));
 
@@ -527,8 +533,13 @@ function Composer(props: {
       if (res.ok && data.body) {
         onPatch(slot.id, { body: data.body, hashtags: data.hashtags, citationMarkers: data.citationMarkers, status: "edited" });
         props.onMergeCitations(data.citations ?? []);
+        const usedInstruction = instruction;
         setInstruction("");
-        if (data.learnedRule) {
+        if (data.conflict && data.candidateRule) {
+          // The revised post already reflects the instruction. But learning it
+          // as a durable rule would fight a global instruction, so ask first.
+          setReviseConflict({ candidateRule: data.candidateRule, instruction: usedInstruction, conflict: data.conflict });
+        } else if (data.learnedRule) {
           props.onLearned(data.learnedRule);
           onFlash(`Learned: "${data.learnedRule}" — applied to all future posts.`);
         }
@@ -537,6 +548,32 @@ function Composer(props: {
       }
     } finally {
       setRevising(false);
+    }
+  }
+
+  async function resolveReviseConflict(resolution: "this_post_only" | "update_global") {
+    if (!reviseConflict) return;
+    setResolvingConflict(true);
+    try {
+      await fetch("/api/social/revise/resolve", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          resolution,
+          candidateRule: reviseConflict.candidateRule,
+          instruction: reviseConflict.instruction,
+          instructionId: reviseConflict.conflict.instructionId,
+        }),
+      });
+      if (resolution === "update_global") {
+        props.onLearned(reviseConflict.candidateRule);
+        onFlash("Updated the global instruction — applies to all future posts.");
+      } else {
+        onFlash("Applied to this post only. Global instructions unchanged.");
+      }
+    } finally {
+      setResolvingConflict(false);
+      setReviseConflict(null);
     }
   }
 
@@ -600,6 +637,31 @@ function Composer(props: {
                     {revising ? "Revising…" : "Revise"}
                   </button>
                 </div>
+
+                {reviseConflict && (
+                  <div className="conflict">
+                    <div className="conflict-h">This conflicts with a global instruction</div>
+                    <p className="conflict-global">
+                      Global instructions are to <strong>{reviseConflict.conflict.instructionText}</strong>
+                    </p>
+                    <p className="conflict-ask">
+                      {reviseConflict.conflict.explanation} This post is already revised. Keep the change to this post only, or update the global instruction so it applies everywhere?
+                    </p>
+                    <div className="conflict-cta">
+                      <button className="btn" disabled={resolvingConflict} onClick={() => resolveReviseConflict("this_post_only")}>
+                        For this post only
+                      </button>
+                      <button
+                        className="btn ghost"
+                        disabled={resolvingConflict}
+                        onClick={() => resolveReviseConflict("update_global")}
+                        title="Not recommended — changes the base policy for every future post"
+                      >
+                        Update global (not recommended)
+                      </button>
+                    </div>
+                  </div>
+                )}
               </>
             ) : (
               <div className="editor-empty">

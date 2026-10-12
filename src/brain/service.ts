@@ -75,16 +75,48 @@ import type { CalSlot, CalCitation } from "./social/calendar";
 import {
   generateTrainingPost,
   submitTrainingFeedback,
+  resolveInstructionConflict,
   loadTraining,
   resetTraining,
   type GenerateTrainingInput,
   type TrainingPost,
   type SubmitFeedbackInput,
   type SubmitFeedbackResult,
+  type ResolveConflictInput,
   type TrainingState,
 } from "./social/training";
+import { resolveCalendarConflict, type ResolveCalendarConflictInput } from "./social/calendar";
 import { generateGraphic, type GenerateGraphicInput, type GraphicResult } from "./social/graphic";
 import { setPendingGraphic } from "./social/training";
+import {
+  loadGlobalInstructions,
+  addGlobalInstruction,
+  updateGlobalInstruction,
+  removeGlobalInstruction,
+  resetGlobalInstructions,
+  type GlobalInstructions,
+  type GlobalInstruction,
+  type InstructionCategory,
+} from "./social/global-instructions";
+import {
+  loadSavedPosts,
+  savePost,
+  updateSavedPostNote,
+  removeSavedPost,
+  type SavedPosts,
+  type SavePostInput,
+} from "./social/saved-posts";
+import { applyStudioCorrection, recordMediaRevision, saveCurrentPost, openSavedPost, revertToTurn, type ConfirmCorrectionRouteInput } from "./social/training";
+import { loadAudienceModel, addAudienceNotes, updateAudienceNote, removeAudienceNote, type AudienceModel } from "./social/audience";
+import {
+  loadLabFacts,
+  addLabFacts,
+  updateLabFact,
+  removeLabFact,
+  type LabFacts,
+  type LabFact,
+  type AddLabFactInput,
+} from "./social/lab-facts";
 
 export interface BrainService {
   // knowledge in
@@ -133,9 +165,40 @@ export interface BrainService {
   getTraining(): Promise<TrainingState>;
   generateTrainingPost(input: GenerateTrainingInput): Promise<TrainingPost>;
   submitTrainingFeedback(input: SubmitFeedbackInput): Promise<SubmitFeedbackResult>;
+  resolveInstructionConflict(input: ResolveConflictInput): Promise<{ ok: true; applied: ResolveConflictInput["resolution"] }>;
   resetTraining(): Promise<void>;
+  // calendar revise-time conflict resolution
+  resolveCalendarConflict(input: ResolveCalendarConflictInput): Promise<{ ok: true; applied: ResolveCalendarConflictInput["resolution"] }>;
+  // editable global writing instructions (the base policy, as data)
+  getGlobalInstructions(): Promise<GlobalInstructions>;
+  addGlobalInstruction(input: { title: string; text: string; category?: InstructionCategory }): Promise<GlobalInstructions>;
+  updateGlobalInstruction(id: string, patch: Partial<Pick<GlobalInstruction, "title" | "text" | "category" | "enabled">>): Promise<GlobalInstructions>;
+  removeGlobalInstruction(id: string): Promise<GlobalInstructions>;
+  resetGlobalInstructions(): Promise<GlobalInstructions>;
+  // saved posts — the user's curated gold standard (verified exemplars)
+  getSavedPosts(): Promise<SavedPosts>;
+  savePost(input: SavePostInput): Promise<SavedPosts>;
+  savePlaygroundPost(note?: string): Promise<{ ok: boolean }>;
+  updateSavedPostNote(id: string, note: string): Promise<SavedPosts>;
+  removeSavedPost(id: string): Promise<SavedPosts>;
+  // real-world lab facts — the Studio's world model (prevents factual fabrication)
+  getLabFacts(): Promise<LabFacts>;
+  addLabFacts(additions: AddLabFactInput[]): Promise<LabFacts>;
+  updateLabFact(id: string, patch: Partial<Pick<LabFact, "statement" | "kind">>): Promise<LabFacts>;
+  removeLabFact(id: string): Promise<LabFacts>;
+  // audience model — who the Studio writes for (corrects persona assumptions)
+  getAudienceModel(): Promise<AudienceModel>;
+  addAudienceNotes(statements: string[]): Promise<AudienceModel>;
+  updateAudienceNote(id: string, statement: string): Promise<AudienceModel>;
+  removeAudienceNote(id: string): Promise<AudienceModel>;
+  // unified correction router: route a confirmed correction to the right memory
+  confirmStudioCorrection(input: ConfirmCorrectionRouteInput): Promise<{ routedTo: string }>;
+  // reopen a saved post into the Playground with its full conversation
+  openSavedPost(savedId: string): Promise<TrainingState>;
+  // revert the current post's body to an earlier turn's output
+  revertToTurn(turnId: string): Promise<TrainingState>;
   // AI-authored post graphic (non-templated SVG)
-  generateGraphic(input: GenerateGraphicInput & { postId?: string }): Promise<GraphicResult>;
+  generateGraphic(input: GenerateGraphicInput & { postId?: string; record?: boolean }): Promise<GraphicResult>;
 }
 
 export class DefaultBrainService implements BrainService {
@@ -454,6 +517,134 @@ export class DefaultBrainService implements BrainService {
     return revisePost(input, this.socialDeps());
   }
 
+  async resolveCalendarConflict(input: ResolveCalendarConflictInput) {
+    return resolveCalendarConflict(input, this.socialDeps());
+  }
+
+  async getGlobalInstructions(): Promise<GlobalInstructions> {
+    return loadGlobalInstructions(this.workspaceId);
+  }
+
+  async addGlobalInstruction(input: { title: string; text: string; category?: InstructionCategory }): Promise<GlobalInstructions> {
+    return addGlobalInstruction(this.workspaceId, input);
+  }
+
+  async updateGlobalInstruction(
+    id: string,
+    patch: Partial<Pick<GlobalInstruction, "title" | "text" | "category" | "enabled">>,
+  ): Promise<GlobalInstructions> {
+    return updateGlobalInstruction(this.workspaceId, id, patch);
+  }
+
+  async removeGlobalInstruction(id: string): Promise<GlobalInstructions> {
+    return removeGlobalInstruction(this.workspaceId, id);
+  }
+
+  async resetGlobalInstructions(): Promise<GlobalInstructions> {
+    return resetGlobalInstructions(this.workspaceId);
+  }
+
+  async getSavedPosts(): Promise<SavedPosts> {
+    return loadSavedPosts(this.workspaceId);
+  }
+
+  async savePost(input: SavePostInput): Promise<SavedPosts> {
+    return savePost(this.workspaceId, input);
+  }
+
+  /** Save the post currently open in the Playground, with its full conversation. */
+  async savePlaygroundPost(note?: string): Promise<{ ok: boolean }> {
+    const ok = await saveCurrentPost(this.workspaceId, note);
+    return { ok };
+  }
+
+  async updateSavedPostNote(id: string, note: string): Promise<SavedPosts> {
+    return updateSavedPostNote(this.workspaceId, id, note);
+  }
+
+  async removeSavedPost(id: string): Promise<SavedPosts> {
+    return removeSavedPost(this.workspaceId, id);
+  }
+
+  async getLabFacts(): Promise<LabFacts> {
+    return loadLabFacts(this.workspaceId);
+  }
+
+  async addLabFacts(additions: AddLabFactInput[]): Promise<LabFacts> {
+    return addLabFacts(this.workspaceId, additions);
+  }
+
+  async updateLabFact(id: string, patch: Partial<Pick<LabFact, "statement" | "kind">>): Promise<LabFacts> {
+    return updateLabFact(this.workspaceId, id, patch);
+  }
+
+  async removeLabFact(id: string): Promise<LabFacts> {
+    return removeLabFact(this.workspaceId, id);
+  }
+
+  async getAudienceModel(): Promise<AudienceModel> {
+    return loadAudienceModel(this.workspaceId);
+  }
+
+  async addAudienceNotes(statements: string[]): Promise<AudienceModel> {
+    return addAudienceNotes(this.workspaceId, statements.map((s) => ({ statement: s, source: "manual" })));
+  }
+
+  async updateAudienceNote(id: string, statement: string): Promise<AudienceModel> {
+    return updateAudienceNote(this.workspaceId, id, statement);
+  }
+
+  async removeAudienceNote(id: string): Promise<AudienceModel> {
+    return removeAudienceNote(this.workspaceId, id);
+  }
+
+  /**
+   * Route a confirmed correction to the right memory. Studio-owned categories
+   * (world/audience/style) are applied directly. The "product" category routes
+   * into the REAL knowledge_items graph via the first-class correction path
+   * (versioned, audited), reusing a persistent "Studio corrections" conversation.
+   */
+  async confirmStudioCorrection(input: ConfirmCorrectionRouteInput): Promise<{ routedTo: string }> {
+    if (input.category === "product") {
+      const conversationId = await this.ensureStudioCorrectionConversation();
+      const preview = await this.previewCorrection({
+        conversationId,
+        correctionText: input.statement,
+      });
+      await this.confirmCorrection({
+        conversationId,
+        correctionText: input.statement,
+        proposedChanges: preview.proposedChanges,
+        confirmedBy: "studio",
+      });
+      return { routedTo: "Product knowledge graph" };
+    }
+    await applyStudioCorrection(input, this.socialDeps());
+    const label =
+      input.category === "world" ? "Real-world lab facts" : input.category === "audience" ? "Audience understanding" : "Style guide";
+    return { routedTo: label };
+  }
+
+  /** Find or create the persistent conversation used to log Studio corrections. */
+  private async ensureStudioCorrectionConversation(): Promise<string> {
+    const existing = await this.repos.getStudioState<{ conversationId: string }>(this.workspaceId, "studio_correction_conversation");
+    if (existing?.conversationId) {
+      const conv = await this.repos.getConversation(existing.conversationId);
+      if (conv) return existing.conversationId;
+    }
+    const conv = await this.repos.createConversation(this.workspaceId, "Studio corrections", "studio");
+    await this.repos.setStudioState(this.workspaceId, "studio_correction_conversation", { conversationId: conv.id });
+    return conv.id;
+  }
+
+  async openSavedPost(savedId: string): Promise<TrainingState> {
+    return openSavedPost(savedId, this.socialDeps());
+  }
+
+  async revertToTurn(turnId: string): Promise<TrainingState> {
+    return revertToTurn(this.workspaceId, turnId);
+  }
+
   async getStyleGuide(): Promise<StyleGuide> {
     return loadStyleGuide(this.workspaceId);
   }
@@ -490,15 +681,24 @@ export class DefaultBrainService implements BrainService {
     return submitTrainingFeedback(input, this.socialDeps());
   }
 
+  async resolveInstructionConflict(input: ResolveConflictInput) {
+    return resolveInstructionConflict(input, this.socialDeps());
+  }
+
   async resetTraining(): Promise<void> {
     return resetTraining(this.workspaceId);
   }
 
-  async generateGraphic(input: GenerateGraphicInput & { postId?: string }): Promise<GraphicResult> {
+  async generateGraphic(input: GenerateGraphicInput & { postId?: string; record?: boolean }): Promise<GraphicResult> {
     const result = await generateGraphic(input, this.provider);
     if (input.postId) {
       try {
         await setPendingGraphic(this.workspaceId, input.postId, result.png);
+        // Record a media turn in the post's conversation (direction + image),
+        // but not for the initial auto-graphic (record === false).
+        if (input.record !== false) {
+          await recordMediaRevision(this.workspaceId, input.direction ?? "", result.png);
+        }
       } catch {
         // non-fatal; the client still has the image
       }

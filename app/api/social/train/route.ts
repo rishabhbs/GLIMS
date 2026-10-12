@@ -14,11 +14,26 @@ export async function GET() {
   }
 }
 
-/** POST: generate the next training post. Body: { focus?: string }. */
+/**
+ * POST: generate the next training post.
+ * Body: { topic?: string; keepTopic?: boolean; focus?: string (legacy) }.
+ *  - topic: the explicit prompt the post is built on (blank = AI picks).
+ *  - keepTopic: "redo body" — reuse the pending post's topic, keep its media.
+ */
 export async function POST(req: NextRequest) {
   try {
-    const b = (await req.json().catch(() => ({}))) as { focus?: string };
-    const post = await getBrainService().generateTrainingPost({ focus: b.focus });
+    const b = (await req.json().catch(() => ({}))) as {
+      topic?: string;
+      keepTopic?: boolean;
+      note?: string;
+      focus?: string;
+    };
+    const post = await getBrainService().generateTrainingPost({
+      topic: b.topic,
+      keepTopic: b.keepTopic,
+      note: b.note,
+      focus: b.focus,
+    });
     return NextResponse.json(post);
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "unknown error" }, { status: 500 });

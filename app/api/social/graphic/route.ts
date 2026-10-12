@@ -7,7 +7,7 @@ export const maxDuration = 60;
 /** Generate an AI-authored SVG graphic for a post body. */
 export async function POST(req: NextRequest) {
   try {
-    const b = (await req.json()) as { body?: string; theme?: string; direction?: string; postId?: string };
+    const b = (await req.json()) as { body?: string; theme?: string; direction?: string; postId?: string; record?: boolean };
     if (!b.body?.trim()) {
       return NextResponse.json({ error: "body is required" }, { status: 400 });
     }
@@ -16,6 +16,9 @@ export async function POST(req: NextRequest) {
       theme: b.theme,
       direction: b.direction,
       postId: b.postId,
+      // record === false for the auto-graphic that fires on a fresh post, so it
+      // doesn't add a redundant media turn to the conversation.
+      record: b.record,
     });
     return NextResponse.json(result);
   } catch (e) {
