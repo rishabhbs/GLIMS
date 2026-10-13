@@ -40,7 +40,7 @@ const EXCLUDED = new Set(["archived", "invalidated"]);
 
 export async function retrieveForQuestion(
   question: string,
-  deps: { repos: Repositories; provider: ModelProvider; workspaceId: string },
+  deps: { repos: Repositories; provider: ModelProvider; workspaceId: string; productId?: string | null },
 ): Promise<GroundingItem[]> {
   // 1. Hybrid search
   const hits = await hybridSearch({ text: question, limit: 12 }, deps);
@@ -54,9 +54,13 @@ export async function retrieveForQuestion(
     expandedIds.add(r.to_item_id);
   }
 
-  // 3. Hydrate full items; drop excluded statuses
+  // 3. Hydrate full items; drop excluded statuses; filter to the active PRODUCT
+  //    so a post for one product never grounds on another product's knowledge.
   const items = await deps.repos.getItemsByIds([...expandedIds]);
-  const kept = (items ?? []).filter((i) => !EXCLUDED.has(i.status));
+  let kept = (items ?? []).filter((i) => !EXCLUDED.has(i.status));
+  if (deps.productId) {
+    kept = kept.filter((i) => (i as { product_id?: string | null }).product_id === deps.productId);
+  }
   if (kept.length === 0) return [];
 
   // 4. Attach evidence/sources for citations

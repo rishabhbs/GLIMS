@@ -40,4 +40,6 @@ next-env.d.ts
 
 # studio learned style guide (local workspace state)
 /.studio
+# agent task-planning scratch (local working notes)
+/.agents
 .env*

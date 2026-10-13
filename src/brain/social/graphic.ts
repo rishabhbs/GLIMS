@@ -13,6 +13,12 @@
 import type { ModelProvider } from "@/providers";
 import { getImageProvider } from "@/providers/image";
 import { renderFrameToSvg, renderFrameToPngDataUrl, type FrameSpec } from "./render";
+import { stripDashes, stripCitationMarkers } from "./training";
+
+/** Scrub on-graphic text the same way post copy is: no em/en dashes, no [n]. */
+function scrubGraphicText(s: string): string {
+  return stripCitationMarkers(stripDashes(s)).trim();
+}
 
 export interface GenerateGraphicInput {
   body: string;
@@ -46,7 +52,8 @@ Return ONLY JSON:
   "body": string,      // one supporting sentence (<= 16 words).
   "cta": string        // short, e.g. "Learn more at cybit.in"
 }
-Keep the scene to elements an illustrator can draw cleanly: a hero object, 2-4 supporting icons/cards, connectors. Ground it in the post; never invent product features.`;
+Keep the scene to elements an illustrator can draw cleanly: a hero object, 2-4 supporting icons/cards, connectors. Ground it in the post; never invent product features.
+On-image text (headline/body/cta) must use NO em-dashes or en-dashes, ever. Use short separate sentences or commas instead.`;
 
 function parseJsonLoose(t: string): unknown {
   let s = t.trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
@@ -77,11 +84,14 @@ async function makeBrief(input: GenerateGraphicInput, provider: ModelProvider): 
   );
   const r = (parseJsonLoose(res.text) ?? {}) as Record<string, unknown>;
   const str = (v: unknown, d = "") => (typeof v === "string" && v.trim() ? v.trim() : d);
+  // scrub the ON-IMAGE text (headline/body/cta) exactly like post copy, so no
+  // em-dashes or stray [n] markers get baked into the raster. `scene` is the
+  // illustrator brief (never shown), so it isn't scrubbed.
   return {
     scene: str(r.scene, "a laboratory dashboard with connected workflow icons"),
-    headline: str(r.headline, input.theme ?? "Built for labs"),
-    body: str(r.body, ""),
-    cta: str(r.cta, "Learn more at cybit.in"),
+    headline: scrubGraphicText(str(r.headline, input.theme ?? "Built for labs")),
+    body: scrubGraphicText(str(r.body, "")),
+    cta: scrubGraphicText(str(r.cta, "Learn more at cybit.in")),
   };
 }
 

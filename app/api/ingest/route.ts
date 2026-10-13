@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
       const file = form.get("file") as File | null;
       const type = (form.get("type") as string) as SourceType;
       const title = (form.get("title") as string) || file?.name || "Uploaded file";
+      const productId = (form.get("productId") as string) || null;
       if (!file) return NextResponse.json({ error: "file is required" }, { status: 400 });
 
       const bytes = new Uint8Array(await file.arrayBuffer());
@@ -31,7 +32,7 @@ export async function POST(req: NextRequest) {
       const path = `${Date.now()}-${safeName}`;
       await uploadSourceFile(path, bytes, file.type || "application/octet-stream");
 
-      input = { type: type || "pdf", title, storagePath: path };
+      input = { type: type || "pdf", title, storagePath: path, productId };
     } else {
       const body = (await req.json()) as IngestInput;
       if (!body?.type) return NextResponse.json({ error: "`type` is required" }, { status: 400 });

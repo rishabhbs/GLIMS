@@ -18,6 +18,7 @@ export async function POST(req: NextRequest) {
       statement?: string;
       avoid?: string;
       note?: string;
+      productId?: string;
     };
     const valid: CorrectionCategory[] = ["product", "world", "audience", "style"];
     if (!b.category || !valid.includes(b.category)) {
@@ -31,6 +32,7 @@ export async function POST(req: NextRequest) {
       statement: b.statement ?? "",
       avoid: b.avoid,
       note: b.note,
+      productId: b.productId,
     });
     return NextResponse.json(result);
   } catch (e) {

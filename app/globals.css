@@ -730,3 +730,13 @@ code {
 .ct-after .ct-diff-h { color: var(--ok); background: var(--ok-soft); }
 .ct-diff-text { font-size: 12px; line-height: 1.5; color: var(--text-soft); white-space: pre-wrap; padding: 7px 8px; max-height: 220px; overflow-y: auto; }
 .ct-after .ct-diff-text { color: var(--text); }
+
+/* ── Product selector (Playground) ────────────────────────────────────────── */
+.pg2-head-left { display: flex; align-items: center; gap: 12px; }
+.product-picker { display: inline-flex; align-items: center; gap: 8px; }
+.product-picker-center { justify-content: center; margin-bottom: var(--space-md); }
+.product-picker-label { font-size: 12px; color: var(--faint); }
+.product-select { font: inherit; font-size: 13px; font-weight: 600; color: var(--accent); background: var(--panel); border: 1px solid color-mix(in oklch, var(--accent) 35%, transparent); border-radius: 999px; padding: 5px 12px; cursor: pointer; }
+.product-select:focus { outline: none; border-color: var(--accent); }
+
+.saved-head-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); }

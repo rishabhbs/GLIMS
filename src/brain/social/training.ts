@@ -26,11 +26,14 @@ import { loadSavedPosts, renderSavedExemplars, savePost, getSavedPost, type Save
 import { loadLabFacts, renderLabFacts, addLabFacts } from "./lab-facts";
 import { loadAudienceModel, renderAudienceModel, addAudienceNotes } from "./audience";
 import { routeCorrection, looksLikeCorrection, type CorrectionProposal, type CorrectionCategory } from "./correction-router";
+import { COMPANY_IDENTITY, renderProductIdentity, type Product } from "./products";
 
 export interface TrainingDeps {
   repos: Repositories;
   provider: ModelProvider;
   workspaceId: string;
+  /** The product this Studio session is writing for. */
+  product: Product;
 }
 
 export interface TrainingCitation {
@@ -105,6 +108,8 @@ export interface TrainingRecord {
 
 export interface TrainingState {
   workspaceId: string;
+  /** The product this training/playground state belongs to (per-product state). */
+  productId: string;
   history: TrainingRecord[];
   /** The post currently open in the Playground. */
   pending: TrainingPost | null;
@@ -174,11 +179,12 @@ export interface SubmitFeedbackResult {
   conflicts: InstructionConflictChoice[];
 }
 
-export async function loadTraining(workspaceId: string): Promise<TrainingState> {
-  const value = await new Repositories().getStudioState<TrainingState>(workspaceId, "training");
+export async function loadTraining(workspaceId: string, productId: string): Promise<TrainingState> {
+  const value = await new Repositories().getStudioState<TrainingState>(workspaceId, trainingKey(productId));
   if (value && Array.isArray(value.history)) {
     return {
       workspaceId,
+      productId,
       history: value.history,
       pending: value.pending ?? null,
       turns: Array.isArray(value.turns) ? value.turns : [],
@@ -186,12 +192,17 @@ export async function loadTraining(workspaceId: string): Promise<TrainingState> 
       updatedAt: value.updatedAt,
     };
   }
-  return { workspaceId, history: [], pending: null, turns: [], nextPostOverride: null, updatedAt: new Date().toISOString() };
+  return { workspaceId, productId, history: [], pending: null, turns: [], nextPostOverride: null, updatedAt: new Date().toISOString() };
+}
+
+/** Per-product studio_state key for the training/playground state. */
+function trainingKey(productId: string): string {
+  return `training:${productId}`;
 }
 
 async function saveTraining(state: TrainingState): Promise<void> {
   state.updatedAt = new Date().toISOString();
-  await new Repositories().setStudioState(state.workspaceId, "training", state);
+  await new Repositories().setStudioState(state.workspaceId, trainingKey(state.productId), state);
 }
 
 // ── grounding helpers (shared shape with calendar) ──────────────────────────
@@ -326,35 +337,41 @@ function sameOpening(a: string, b: string, words = 6): boolean {
   return oa.length > 0 && oa === ob;
 }
 
-/** A rotating set of angles so training posts aren't all the same topic. */
+/** A rotating set of PRODUCT-NEUTRAL angles so posts aren't all the same topic.
+ *  The specific subject comes from the active product's knowledge, not here. */
 const ANGLES = [
   "a specific feature and the exact problem it removes",
-  "a real workflow step a lab performs and how it works",
-  "a compliance/accreditation detail (NABL, ISO 17025, ULR)",
-  "a commercial-side capability (inquiry, quotation, invoicing)",
-  "a configuration/setup reality (sample category, templates, workflows)",
-  "an instrument or inventory capability",
-  "a before/after contrast of a daily lab frustration",
-  "a positioning point about who Sampleify is built for",
+  "a real workflow step the user performs and how it works",
+  "a compliance or regulatory detail the product handles",
+  "a commercial or operational capability",
+  "a configuration/setup reality (templates, workflows, roles)",
+  "an integration or data capability",
+  "a before/after contrast of a daily frustration the product fixes",
+  "a positioning point about who the product is built for",
 ];
 
 // The task-specific tail. The BASE writing policy now comes from the editable
 // GLOBAL INSTRUCTIONS (see ./global-instructions), rendered and prepended at
 // generation time. This tail only describes the training TASK + output shape.
-const TRAIN_TASK = `TASK: Write ONE LinkedIn post for Sampleify. This is a training round, the user will rate it and teach you their taste.
+function trainTask(product: Product): string {
+  return `TASK: Write ONE LinkedIn post for ${product.name}. This is a training round, the user will rate it and teach you their taste.
 Follow the GLOBAL WRITING INSTRUCTIONS above and the LEARNED STYLE GUIDE if present. Study the RATED EXAMPLES: write MORE like the high-rated ones, and AVOID what made the low-rated ones weak.
-Also return "topic": a single clear sentence describing what this post is about and who it's for, phrased as a prompt a person would write (e.g. "Lab efficiency and faster result handoffs, aimed at senior analysts"). This is the working prompt the user will see and can edit.
+Also return "topic": a single clear sentence describing what this post is about and who it's for, phrased as a prompt a person would write (e.g. "Faster result handoffs, aimed at senior analysts"). This is the working prompt the user will see and can edit.
 OUTPUT ONLY JSON: { "topic": string, "theme": string, "body": string, "hashtags": string[], "citationMarkers": number[] }`;
+}
 
 /**
- * Build the full training system prompt from the editable global instructions
- * plus the task tail. An optional one-shot override (chosen via "apply to this
- * post only") is appended as a final, post-specific instruction.
+ * Build the full training system prompt: COMPANY identity + PRODUCT identity +
+ * grounding (global instructions, lab facts, audience) + the task tail. An
+ * optional one-shot override is appended last.
  */
-function buildTrainSystem(groundingBlocks: string[], oneShotOverride: string | null): string {
-  // Grounding (global instructions, lab facts, audience model) sits ahead of
-  // the task so it frames everything the model writes.
-  const parts = [...groundingBlocks.filter(Boolean), TRAIN_TASK];
+function buildTrainSystem(product: Product, groundingBlocks: string[], oneShotOverride: string | null): string {
+  const parts = [
+    COMPANY_IDENTITY,
+    renderProductIdentity(product),
+    ...groundingBlocks.filter(Boolean),
+    trainTask(product),
+  ];
   let sys = parts.join("\n\n");
   if (oneShotOverride && oneShotOverride.trim()) {
     sys += `\n\nFOR THIS POST ONLY (a one-time instruction that overrides the global instructions where they conflict): ${oneShotOverride.trim()}`;
@@ -363,7 +380,7 @@ function buildTrainSystem(groundingBlocks: string[], oneShotOverride: string | n
 }
 
 export async function generateTrainingPost(input: GenerateTrainingInput, deps: TrainingDeps): Promise<TrainingPost> {
-  const state = await loadTraining(deps.workspaceId);
+  const state = await loadTraining(deps.workspaceId, deps.product.id);
 
   // Resolve the TOPIC — the explicit prompt the post is built on.
   //  1. "Redo body": reuse the current pending post's topic (same subject, new copy).
@@ -381,17 +398,17 @@ export async function generateTrainingPost(input: GenerateTrainingInput, deps: T
   }
   const angle = topic;
 
-  const query = `${angle} Sampleify LIMS features workflows metrics compliance commercial setup`;
-  const items = await retrieveForQuestion(query, deps);
+  const query = `${angle} ${deps.product.name} ${deps.product.oneLiner} features workflows capabilities positioning`;
+  const items = await retrieveForQuestion(query, { ...deps, productId: deps.product.id });
   const supported = items.filter((i) => i.sources.length > 0);
   if (supported.length === 0) {
     throw new Error("No grounded knowledge to train on yet — ingest material first.");
   }
   const validMarkers = new Set(items.map((i) => i.marker));
   const knowledge = buildKnowledgeContext(items);
-  const styleBlock = renderStyleGuide(await loadStyleGuide(deps.workspaceId));
+  const styleBlock = renderStyleGuide(await loadStyleGuide(deps.workspaceId, deps.product.id));
   const globalBlock = renderGlobalInstructions(await loadGlobalInstructions(deps.workspaceId));
-  const savedBlock = renderSavedExemplars(await loadSavedPosts(deps.workspaceId));
+  const savedBlock = renderSavedExemplars(await loadSavedPosts(deps.workspaceId, deps.product.id));
   const labFactsBlock = renderLabFacts(await loadLabFacts(deps.workspaceId));
   const audienceBlock = renderAudienceModel(await loadAudienceModel(deps.workspaceId));
   // Grounding blocks framing every generation (order = priority).
@@ -469,7 +486,7 @@ export async function generateTrainingPost(input: GenerateTrainingInput, deps: T
 
   const res = await deps.provider.chat(
     [
-      { role: "system", content: buildTrainSystem(groundingBlocks, isRevision ? null : oneShotOverride) },
+      { role: "system", content: buildTrainSystem(deps.product, groundingBlocks, isRevision ? null : oneShotOverride) },
       { role: "user", content: user },
     ],
     { temperature: isRevision ? 0.6 : 0.75, maxTokens: 2000 },
@@ -542,7 +559,7 @@ export async function generateTrainingPost(input: GenerateTrainingInput, deps: T
         `OUTPUT ONLY JSON.`;
       const retry = await deps.provider.chat(
         [
-          { role: "system", content: buildTrainSystem(groundingBlocks, null) },
+          { role: "system", content: buildTrainSystem(deps.product, groundingBlocks, null) },
           { role: "user", content: retryUser },
         ],
         { temperature: 0.8, maxTokens: 2000 },
@@ -588,7 +605,7 @@ export async function generateTrainingPost(input: GenerateTrainingInput, deps: T
   // is written anywhere.
   let correctionProposal: CorrectionProposal | null = null;
   if (isRevision && noteOverride && state.pending?.body && looksLikeCorrection(noteOverride)) {
-    correctionProposal = await routeCorrection(noteOverride, state.pending.body, deps.provider);
+    correctionProposal = await routeCorrection(noteOverride, state.pending.body, deps.provider, deps.product.name);
   }
 
   // The working topic shown to the user: keep what they typed / the kept topic;
@@ -643,8 +660,8 @@ function turnId(): string {
  * The preview (pending body) becomes that earlier copy, and a turn is appended
  * recording the revert so the history stays honest. Returns the new state.
  */
-export async function revertToTurn(workspaceId: string, turnId_: string): Promise<TrainingState> {
-  const state = await loadTraining(workspaceId);
+export async function revertToTurn(workspaceId: string, productId: string, turnId_: string): Promise<TrainingState> {
+  const state = await loadTraining(workspaceId, productId);
   if (!state.pending) throw new Error("no active post");
   const target = state.turns.find((t) => t.id === turnId_ && t.role === "assistant" && t.channel === "body");
   if (!target || typeof target.body !== "string") throw new Error("cannot revert to that turn");
@@ -669,8 +686,8 @@ export async function revertToTurn(workspaceId: string, turnId_: string): Promis
  * typed, with only the deterministic typographic scrubs applied. The edited
  * turn's stored body is updated so the bubble reflects it.
  */
-export async function editTurnBody(workspaceId: string, turnId_: string, newBody: string): Promise<TrainingState> {
-  const state = await loadTraining(workspaceId);
+export async function editTurnBody(workspaceId: string, productId: string, turnId_: string, newBody: string): Promise<TrainingState> {
+  const state = await loadTraining(workspaceId, productId);
   if (!state.pending) throw new Error("no active post");
   const target = state.turns.find((t) => t.id === turnId_ && t.role === "assistant" && t.channel === "body");
   if (!target) throw new Error("cannot edit that turn");
@@ -687,8 +704,8 @@ export async function editTurnBody(workspaceId: string, turnId_: string, newBody
 }
 
 /** Record a media redo in the post's conversation timeline. */
-export async function recordMediaRevision(workspaceId: string, note: string, image?: string | null): Promise<void> {
-  const state = await loadTraining(workspaceId);
+export async function recordMediaRevision(workspaceId: string, productId: string, note: string, image?: string | null): Promise<void> {
+  const state = await loadTraining(workspaceId, productId);
   const ts = new Date().toISOString();
   const appended: PostTurn[] = [];
   if (note.trim()) appended.push({ id: turnId(), role: "user", channel: "media", text: note.trim(), createdAt: ts });
@@ -731,7 +748,7 @@ export async function applyStudioCorrection(input: ConfirmCorrectionRouteInput, 
       return true;
     }
     case "style": {
-      if (input.statement.trim()) await addStyleRules(deps.workspaceId, [{ rule: input.statement.trim(), source }]);
+      if (input.statement.trim()) await addStyleRules(deps.workspaceId, deps.product.id, [{ rule: input.statement.trim(), source }]);
       return true;
     }
     default:
@@ -748,7 +765,7 @@ export async function submitTrainingFeedback(
   input: SubmitFeedbackInput,
   deps: TrainingDeps,
 ): Promise<SubmitFeedbackResult> {
-  const state = await loadTraining(deps.workspaceId);
+  const state = await loadTraining(deps.workspaceId, deps.product.id);
 
   // Archive the rated post.
   const record: TrainingRecord = {
@@ -802,7 +819,7 @@ export async function submitTrainingFeedback(
           }
         }
         if (clean.length) {
-          await addStyleRules(deps.workspaceId, clean);
+          await addStyleRules(deps.workspaceId, deps.product.id, clean);
           learnedRules.push(...clean.map((c) => c.rule));
         }
       }
@@ -840,7 +857,7 @@ export async function resolveInstructionConflict(
   deps: TrainingDeps,
 ): Promise<{ ok: true; applied: ConflictResolution }> {
   if (input.resolution === "this_post_only") {
-    const state = await loadTraining(deps.workspaceId);
+    const state = await loadTraining(deps.workspaceId, deps.product.id);
     // Compose with any existing override so multiple one-shots stack for the next post.
     state.nextPostOverride = state.nextPostOverride
       ? `${state.nextPostOverride} ${input.candidateRule.trim()}`
@@ -860,13 +877,13 @@ export async function resolveInstructionConflict(
   return { ok: true, applied: "update_global" };
 }
 
-export async function resetTraining(workspaceId: string): Promise<void> {
-  await saveTraining({ workspaceId, history: [], pending: null, turns: [], nextPostOverride: null, updatedAt: new Date().toISOString() });
+export async function resetTraining(workspaceId: string, productId: string): Promise<void> {
+  await saveTraining({ workspaceId, productId, history: [], pending: null, turns: [], nextPostOverride: null, updatedAt: new Date().toISOString() });
 }
 
 /** Attach a generated graphic (PNG data URL) to the current pending post. */
-export async function setPendingGraphic(workspaceId: string, postId: string, image: string): Promise<void> {
-  const state = await loadTraining(workspaceId);
+export async function setPendingGraphic(workspaceId: string, productId: string, postId: string, image: string): Promise<void> {
+  const state = await loadTraining(workspaceId, productId);
   if (state.pending && state.pending.id === postId) {
     state.pending.image = image;
     await saveTraining(state);
@@ -878,10 +895,10 @@ export async function setPendingGraphic(workspaceId: string, postId: string, ima
  * into saved posts. Upserts, so re-saving a refined post updates it in place.
  * Returns true if there was a post to save.
  */
-export async function saveCurrentPost(workspaceId: string, note?: string): Promise<boolean> {
-  const state = await loadTraining(workspaceId);
+export async function saveCurrentPost(workspaceId: string, productId: string, note?: string): Promise<boolean> {
+  const state = await loadTraining(workspaceId, productId);
   if (!state.pending) return false;
-  await savePost(workspaceId, {
+  await savePost(workspaceId, productId, {
     body: state.pending.body,
     topic: state.pending.topic,
     theme: state.pending.theme,
@@ -901,12 +918,12 @@ export async function saveCurrentPost(workspaceId: string, note?: string): Promi
  */
 export async function openSavedPost(savedId: string, deps: TrainingDeps): Promise<TrainingState> {
   // Auto-save whatever is currently open, so switching never loses work.
-  await saveCurrentPost(deps.workspaceId);
+  await saveCurrentPost(deps.workspaceId, deps.product.id);
 
-  const saved = await getSavedPost(deps.workspaceId, savedId);
+  const saved = await getSavedPost(deps.workspaceId, deps.product.id, savedId);
   if (!saved) throw new Error("saved post not found");
 
-  const state = await loadTraining(deps.workspaceId);
+  const state = await loadTraining(deps.workspaceId, deps.product.id);
   const turns: PostTurn[] = (saved.turns ?? []).map((t) => ({
     id: turnId(),
     role: t.role,

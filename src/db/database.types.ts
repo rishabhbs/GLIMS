@@ -26,6 +26,18 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["workspaces"]["Insert"]>;
         Relationships: [];
       };
+      products: {
+        Row: {
+          id: string; workspace_id: string; slug: string; name: string;
+          one_liner: string; positioning: string; active: boolean; sort_order: number; created_at: string;
+        };
+        Insert: {
+          id?: string; workspace_id: string; slug: string; name: string;
+          one_liner?: string; positioning?: string; active?: boolean; sort_order?: number; created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["products"]["Insert"]>;
+        Relationships: [];
+      };
       entity_types: {
         Row: { key: string; label: string; description: string | null; sort_order: number; is_system: boolean };
         Insert: { key: string; label: string; description?: string | null; sort_order?: number; is_system?: boolean };
@@ -40,13 +52,13 @@ export interface Database {
       };
       sources: {
         Row: {
-          id: string; workspace_id: string; type: string; title: string | null;
+          id: string; workspace_id: string; product_id: string | null; type: string; title: string | null;
           uri: string | null; storage_path: string | null; raw_text: string | null;
           content_hash: string; sensitivity: string; extraction_method: string | null;
           added_by: string | null;
         } & Timestamps;
         Insert: {
-          id?: string; workspace_id: string; type: string; title?: string | null;
+          id?: string; workspace_id: string; product_id?: string | null; type: string; title?: string | null;
           uri?: string | null; storage_path?: string | null; raw_text?: string | null;
           content_hash: string; sensitivity?: string; extraction_method?: string | null;
           added_by?: string | null; created_at?: string;
@@ -84,14 +96,14 @@ export interface Database {
       };
       knowledge_items: {
         Row: {
-          id: string; workspace_id: string; entity_type: string; title: string;
+          id: string; workspace_id: string; product_id: string | null; entity_type: string; title: string;
           claim: string; body: string | null; status: string; source_classification: string;
           confidence: number; attributes: Json; embedding: string | null;
           embedding_model: string | null; superseded_by: string | null; created_by: string | null;
           confirmed_by: string | null; confirmed_at: string | null; created_at: string; updated_at: string;
         };
         Insert: {
-          id?: string; workspace_id: string; entity_type: string; title: string;
+          id?: string; workspace_id: string; product_id?: string | null; entity_type: string; title: string;
           claim: string; body?: string | null; status?: string; source_classification?: string;
           confidence?: number; attributes?: Json; embedding?: string | null;
           embedding_model?: string | null; superseded_by?: string | null; created_by?: string | null;

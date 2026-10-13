@@ -37,7 +37,11 @@ type Post = {
 
 const AUTHOR = { name: "Deepak Cybit", title: "Building Sampleify LIMS", initials: "DC" };
 
+type ProductOpt = { id: string; slug: string; name: string };
+
 export function PlaygroundClient() {
+  const [products, setProducts] = useState<ProductOpt[]>([]);
+  const [productId, setProductId] = useState<string>("");
   const [post, setPost] = useState<Post | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [topic, setTopic] = useState("");
@@ -61,6 +65,23 @@ export function PlaygroundClient() {
 
   const feedRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  // Current product id, kept in a ref so the fetch helpers always see the
+  // latest value without being in every callback's dependency list.
+  const pidRef = useRef<string>("");
+  useEffect(() => { pidRef.current = productId; }, [productId]);
+
+  // Fetch helpers that always inject the active product.
+  const trainGet = useCallback(() => {
+    const q = pidRef.current ? `?product=${encodeURIComponent(pidRef.current)}` : "";
+    return fetch(`/api/social/train${q}`);
+  }, []);
+  const postJson = useCallback((url: string, body: Record<string, unknown> = {}) => {
+    return fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...body, productId: pidRef.current || undefined }),
+    });
+  }, []);
 
   // Auto-grow the composer to fit its content, up to ~5 lines, then scroll.
   const autosize = useCallback(() => {
@@ -89,7 +110,7 @@ export function PlaygroundClient() {
   }, [turns.length, loading]);
 
   const refreshTurns = useCallback(async () => {
-    const res = await fetch("/api/social/train");
+    const res = await trainGet();
     if (res.ok) {
       const state = await res.json();
       setTurns(state.turns ?? []);
@@ -98,7 +119,7 @@ export function PlaygroundClient() {
         setImage(state.pending.image ?? null);
       }
     }
-  }, []);
+  }, [trainGet]);
 
   const generate = useCallback(
     async (opts?: { keepTopic?: boolean; auto?: boolean; note?: string; topicOverride?: string }) => {
@@ -110,11 +131,7 @@ export function PlaygroundClient() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch("/api/social/train", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ topic: sendTopic, keepTopic, note: opts?.note?.trim() || undefined }),
-        });
+        const res = await postJson("/api/social/train", { topic: sendTopic, keepTopic, note: opts?.note?.trim() || undefined });
         const data = await res.json();
         if (!res.ok) {
           setError(data.error ?? "Generation failed.");
@@ -152,11 +169,7 @@ export function PlaygroundClient() {
     async (p: Post, direction?: string, record = true) => {
       setSvgLoading(true);
       try {
-        const res = await fetch("/api/social/graphic", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ postId: p.id, body: p.body, theme: p.theme, direction, record }),
-        });
+        const res = await postJson("/api/social/graphic", { postId: p.id, body: p.body, theme: p.theme, direction, record });
         const data = await res.json();
         if (res.ok && data.png) {
           setImage(data.png);
@@ -167,38 +180,57 @@ export function PlaygroundClient() {
         setSvgLoading(false);
       }
     },
-    [refreshTurns],
+    [refreshTurns, postJson],
   );
 
+  // Load the active product's pending state into the view (used on boot and
+  // whenever the product changes).
+  const loadProductState = useCallback(async () => {
+    // Clear the current view first so stale content never bleeds across products.
+    setPost(null); setTurns([]); setTopic(""); setImage(null); setSvg(null);
+    setCorrection(null); setSaved(false);
+    const res = await trainGet();
+    if (!res.ok) return;
+    const state = await res.json();
+    if (state.pending) {
+      setPost(state.pending);
+      setTurns(state.turns ?? []);
+      setTopic(state.pending.topic ?? "");
+      if (state.pending.image) setImage(state.pending.image);
+    }
+  }, [trainGet]);
+
+  // Boot: load products, choose the active one (saved choice or first), then
+  // load its state.
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/api/social/train");
-        if (res.ok) {
-          const state = await res.json();
-          if (state.pending) {
-            setPost(state.pending);
-            setTurns(state.turns ?? []);
-            setTopic(state.pending.topic ?? "");
-            if (state.pending.image) setImage(state.pending.image);
-            try {
-              const sres = await fetch("/api/social/saved");
-              if (sres.ok) {
-                const sp = await sres.json();
-                const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
-                const body = norm(state.pending.body ?? "");
-                setSaved((sp.posts ?? []).some((p: { body: string }) => norm(p.body) === body));
-              }
-            } catch {
-              /* non-fatal */
-            }
-          }
-        }
+        const res = await fetch("/api/social/products");
+        const list: ProductOpt[] = res.ok ? (await res.json()).products ?? [] : [];
+        setProducts(list);
+        const saved = typeof window !== "undefined" ? localStorage.getItem("glims.product") : null;
+        const active = (saved && list.some((p) => p.id === saved) ? saved : list[0]?.id) ?? "";
+        setProductId(active);
+        pidRef.current = active;
+        await loadProductState();
       } finally {
         setBooted(true);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Switching product: persist the choice and reload that product's state.
+  const switchProduct = useCallback(
+    async (id: string) => {
+      if (id === productId) return;
+      setProductId(id);
+      pidRef.current = id;
+      if (typeof window !== "undefined") localStorage.setItem("glims.product", id);
+      await loadProductState();
+    },
+    [productId, loadProductState],
+  );
 
   useEffect(() => {
     if (post && !image && !svgLoading) makeGraphic(post, undefined, false);
@@ -246,11 +278,7 @@ export function PlaygroundClient() {
   const revert = useCallback(async (turnId: string) => {
     setReverting(turnId);
     try {
-      const res = await fetch("/api/social/train/revert", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ turnId }),
-      });
+      const res = await postJson("/api/social/train/revert", { turnId });
       if (res.ok) {
         const state = await res.json();
         setTurns(state.turns ?? []);
@@ -260,56 +288,49 @@ export function PlaygroundClient() {
     } finally {
       setReverting(null);
     }
-  }, []);
+  }, [postJson]);
 
   // Inline-edit an assistant body bubble: save the edited copy verbatim.
   const editTurn = useCallback(async (turnId: string, body: string) => {
-    const res = await fetch("/api/social/train/edit", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ turnId, body }),
-    });
+    const res = await postJson("/api/social/train/edit", { turnId, body });
     if (res.ok) {
       const state = await res.json();
       setTurns(state.turns ?? []);
       if (state.pending) setPost(state.pending);
       setSaved(false);
     }
-  }, []);
+  }, [postJson]);
 
   const confirmCorrection = useCallback(async () => {
     if (!correction || (!corrStatement.trim() && !corrAvoid.trim())) return;
     setCorrState("saving");
     try {
-      const res = await fetch("/api/social/train/correction", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ category: correction.category, statement: corrStatement.trim(), avoid: corrAvoid.trim() || undefined }),
+      const res = await postJson("/api/social/train/correction", {
+        category: correction.category,
+        statement: corrStatement.trim(),
+        avoid: corrAvoid.trim() || undefined,
       });
       setCorrState(res.ok ? "saved" : "idle");
     } catch {
       setCorrState("idle");
     }
-  }, [correction, corrStatement, corrAvoid]);
+  }, [correction, corrStatement, corrAvoid, postJson]);
 
   const savePost = useCallback(async () => {
     if (!post || saving || saved) return;
     setSaving(true);
     try {
-      const res = await fetch("/api/social/train/save", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      });
+      const res = await postJson("/api/social/train/save", {});
       if (res.ok) setSaved(true);
     } finally {
       setSaving(false);
     }
-  }, [post, saving, saved]);
+  }, [post, saving, saved, postJson]);
 
   async function startNew() {
-    if (post) await fetch("/api/social/train/save", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => {});
-    await fetch("/api/social/train", { method: "DELETE" });
+    if (post) await postJson("/api/social/train/save", {}).catch(() => {});
+    const q = pidRef.current ? `?product=${encodeURIComponent(pidRef.current)}` : "";
+    await fetch(`/api/social/train${q}`, { method: "DELETE" });
     setPost(null);
     setTurns([]);
     setTopic("");
@@ -327,6 +348,12 @@ export function PlaygroundClient() {
     return (
       <div className="pg-start">
         <div className="prompt-screen">
+          <div className="product-picker product-picker-center">
+            <span className="product-picker-label">Writing for</span>
+            <select className="product-select" value={productId} onChange={(e) => switchProduct(e.target.value)}>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
           <h1 className="prompt-title">Start a post</h1>
           <p className="prompt-tag">Describe the post, or let the AI pick a topic. You can keep refining it after.</p>
           {error && <div className="placeholder err">{error} {error.includes("ingest") && <Link href="/knowledge" className="chip">Ingest material</Link>}</div>}
@@ -367,7 +394,14 @@ export function PlaygroundClient() {
       {/* LEFT — the conversation + bottom composer */}
       <section className="pg2-main">
         <div className="pg2-head">
-          <h1>Playground</h1>
+          <div className="pg2-head-left">
+            <h1>Playground</h1>
+            <div className="product-picker">
+              <select className="product-select" value={productId} onChange={(e) => switchProduct(e.target.value)}>
+                {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+          </div>
           <button className="btn ghost small" onClick={startNew} title="Save this and start a fresh post">New post</button>
         </div>
 

@@ -24,11 +24,14 @@ import {
 import { loadSavedPosts, renderSavedExemplars } from "./saved-posts";
 import { loadLabFacts, renderLabFacts } from "./lab-facts";
 import { loadAudienceModel, renderAudienceModel } from "./audience";
+import { COMPANY_IDENTITY, renderProductIdentity, type Product } from "./products";
 
 export interface CalendarDeps {
   repos: Repositories;
   provider: ModelProvider;
   workspaceId: string;
+  /** The product this calendar session writes for. */
+  product: Product;
 }
 
 export type SlotStatus = "idea" | "drafting" | "drafted" | "edited" | "ready";
@@ -129,8 +132,8 @@ function buildKnowledgeContext(items: GroundingItem[]): string {
 
 async function retrieve(query: string, deps: CalendarDeps) {
   const items = await retrieveForQuestion(
-    `${query} Sampleify LIMS features workflows metrics customers positioning benefits`,
-    deps,
+    `${query} ${deps.product.name} ${deps.product.oneLiner} features workflows capabilities positioning`,
+    { ...deps, productId: deps.product.id },
   );
   const supported = items.filter((i) => i.sources.length > 0);
   return { items, supported };
@@ -259,7 +262,7 @@ function slopHits(text: string): string[] {
 
 // Task tails. The base writing policy comes from the editable GLOBAL
 // INSTRUCTIONS, prepended at each call site via `sys()`.
-const PLAN_TASK = `TASK: Plan a LinkedIn content calendar for Sampleify.
+const PLAN_TASK = `TASK: Plan a LinkedIn content calendar for the product named above.
 You are given a set of DATE SLOTS and grounded KNOWLEDGE items. Assign each slot a focused theme + angle drawn from the knowledge.
 RULES:
 - Base every theme/angle on the KNOWLEDGE items (real features, workflows, metrics, customers, positioning). Do not invent.
@@ -274,8 +277,10 @@ Return one object per provided slot id, preserving the ids.`;
  * Prepend the editable global writing policy (and real-world lab facts, which
  * are grounding) to a task tail to form a system prompt.
  */
-function sys(globalBlock: string, task: string, factsBlock = ""): string {
-  return [globalBlock, factsBlock, task].filter(Boolean).join("\n\n");
+function sys(product: Product, globalBlock: string, task: string, factsBlock = ""): string {
+  return [COMPANY_IDENTITY, renderProductIdentity(product), globalBlock, factsBlock, task]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export async function planCalendar(input: PlanCalendarInput, deps: CalendarDeps): Promise<PlanCalendarResult> {
@@ -303,7 +308,7 @@ export async function planCalendar(input: PlanCalendarInput, deps: CalendarDeps)
   }
 
   const knowledge = buildKnowledgeContext(items);
-  const styleBlock = renderStyleGuide(await loadStyleGuide(deps.workspaceId));
+  const styleBlock = renderStyleGuide(await loadStyleGuide(deps.workspaceId, deps.product.id));
   const globalBlock = renderGlobalInstructions(await loadGlobalInstructions(deps.workspaceId));
   const slotList = slots.map((s) => ({ id: s.id, date: s.date, index: s.index }));
   const coveredBlock = (input.existing ?? []).length
@@ -315,7 +320,7 @@ export async function planCalendar(input: PlanCalendarInput, deps: CalendarDeps)
 
   const res = await deps.provider.chat(
     [
-      { role: "system", content: sys(globalBlock, PLAN_TASK) },
+      { role: "system", content: sys(deps.product, globalBlock, PLAN_TASK) },
       { role: "user", content: user },
     ],
     { temperature: 0.5, maxTokens: 16000 },
@@ -343,7 +348,7 @@ export async function planCalendar(input: PlanCalendarInput, deps: CalendarDeps)
   };
 }
 
-const DRAFT_TASK = `TASK: Write ready-to-publish LinkedIn posts for Sampleify, following the GLOBAL WRITING INSTRUCTIONS above.
+const DRAFT_TASK = `TASK: Write ready-to-publish LinkedIn posts for the product named above, following the GLOBAL WRITING INSTRUCTIONS above.
 RULES:
 - Every factual claim MUST be backed by a knowledge item; list those marker numbers in "citationMarkers".
 - Each post must be DISTINCT from the others in this batch AND from any ALREADY PUBLISHED posts provided. Do not reuse the same hook, opening line, framing, or metric-as-lead. The product is the same, so overlap in facts is fine, but every post says something new from a different angle. No "same thing, different words".
@@ -360,12 +365,12 @@ export async function draftPosts(input: DraftPostsInput, deps: CalendarDeps): Pr
   }
   const validMarkers = new Set(items.map((i) => i.marker));
   const knowledge = buildKnowledgeContext(items);
-  const styleBlock = renderStyleGuide(await loadStyleGuide(deps.workspaceId));
+  const styleBlock = renderStyleGuide(await loadStyleGuide(deps.workspaceId, deps.product.id));
   const globalBlock = renderGlobalInstructions(await loadGlobalInstructions(deps.workspaceId));
-  const savedBlock = renderSavedExemplars(await loadSavedPosts(deps.workspaceId));
+  const savedBlock = renderSavedExemplars(await loadSavedPosts(deps.workspaceId, deps.product.id));
   const labFactsBlock = renderLabFacts(await loadLabFacts(deps.workspaceId));
   const audienceBlock = renderAudienceModel(await loadAudienceModel(deps.workspaceId));
-  const draftSystem = sys(globalBlock, DRAFT_TASK, [labFactsBlock, audienceBlock].filter(Boolean).join("\n\n"));
+  const draftSystem = sys(deps.product, globalBlock, DRAFT_TASK, [labFactsBlock, audienceBlock].filter(Boolean).join("\n\n"));
   const slotList = input.slots.map((s) => ({ id: s.id, date: s.date, theme: s.theme, angle: s.angle }));
   const existingBodies = input.existingBodies ?? [];
   const publishedBlock = existingBodies.length
@@ -539,7 +544,7 @@ async function redraftDistinct(
   }
 }
 
-const REVISE_TASK = `TASK: Revise ONE LinkedIn post for Sampleify per the user's instruction, following the GLOBAL WRITING INSTRUCTIONS above. You also LEARN the user's durable style preference from their instruction.
+const REVISE_TASK = `TASK: Revise ONE LinkedIn post for the product named above per the user's instruction, following the GLOBAL WRITING INSTRUCTIONS above. You also LEARN the user's durable style preference from their instruction.
 RULES:
 - Apply the instruction precisely; change only what's asked, keep the rest.
 - Follow the LEARNED STYLE GUIDE if present (the user already taught these).
@@ -551,7 +556,7 @@ export async function revisePost(input: RevisePostInput, deps: CalendarDeps): Pr
   const { items } = await retrieve(`${input.slot.theme} ${input.slot.angle} ${input.instruction}`, deps);
   const validMarkers = new Set(items.map((i) => i.marker));
   const knowledge = buildKnowledgeContext(items);
-  const styleBlock = renderStyleGuide(await loadStyleGuide(deps.workspaceId));
+  const styleBlock = renderStyleGuide(await loadStyleGuide(deps.workspaceId, deps.product.id));
   const globalBlock = renderGlobalInstructions(await loadGlobalInstructions(deps.workspaceId));
   const labFactsBlock = renderLabFacts(await loadLabFacts(deps.workspaceId));
   const audienceBlock = renderAudienceModel(await loadAudienceModel(deps.workspaceId));
@@ -560,7 +565,7 @@ export async function revisePost(input: RevisePostInput, deps: CalendarDeps): Pr
 
   const res = await deps.provider.chat(
     [
-      { role: "system", content: sys(globalBlock, REVISE_TASK, groundingBlock) },
+      { role: "system", content: sys(deps.product, globalBlock, REVISE_TASK, groundingBlock) },
       { role: "user", content: user },
     ],
     { temperature: 0.6, maxTokens: 4000 },
@@ -597,7 +602,7 @@ export async function revisePost(input: RevisePostInput, deps: CalendarDeps): Pr
     if (conflict) {
       candidateRule = styleRule; // not applied; await user's decision
     } else {
-      await addStyleRules(deps.workspaceId, [{ rule: styleRule, source: input.instruction }]);
+      await addStyleRules(deps.workspaceId, deps.product.id, [{ rule: styleRule, source: input.instruction }]);
       learnedRule = styleRule;
     }
   }
@@ -647,6 +652,6 @@ export async function resolveCalendarConflict(
     input.newInstructionText?.trim() ||
     (existing ? `${existing.text} ${input.candidateRule.trim()}` : input.candidateRule.trim());
   await updateGlobalInstruction(deps.workspaceId, input.instructionId, { text });
-  await addStyleRules(deps.workspaceId, [{ rule: input.candidateRule, source: input.instruction }]);
+  await addStyleRules(deps.workspaceId, deps.product.id, [{ rule: input.candidateRule, source: input.instruction }]);
   return { ok: true, applied: "update_global" };
 }

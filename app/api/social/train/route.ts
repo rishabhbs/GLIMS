@@ -4,10 +4,11 @@ import { getBrainService } from "@/brain/service";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-/** GET: current training state (history + any pending post). */
-export async function GET() {
+/** GET: current training state for the active product. ?product=<id> */
+export async function GET(req: NextRequest) {
   try {
-    const state = await getBrainService().getTraining();
+    const productId = new URL(req.url).searchParams.get("product") ?? undefined;
+    const state = await getBrainService().getTraining(productId);
     return NextResponse.json(state);
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "unknown error" }, { status: 500 });
@@ -15,10 +16,8 @@ export async function GET() {
 }
 
 /**
- * POST: generate the next training post.
- * Body: { topic?: string; keepTopic?: boolean; focus?: string (legacy) }.
- *  - topic: the explicit prompt the post is built on (blank = AI picks).
- *  - keepTopic: "redo body" — reuse the pending post's topic, keep its media.
+ * POST: generate the next training post for the active product.
+ * Body: { topic?; keepTopic?; note?; focus? (legacy); productId? }.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -27,12 +26,14 @@ export async function POST(req: NextRequest) {
       keepTopic?: boolean;
       note?: string;
       focus?: string;
+      productId?: string;
     };
     const post = await getBrainService().generateTrainingPost({
       topic: b.topic,
       keepTopic: b.keepTopic,
       note: b.note,
       focus: b.focus,
+      productId: b.productId,
     });
     return NextResponse.json(post);
   } catch (e) {
@@ -40,10 +41,11 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/** DELETE: reset the training history. */
-export async function DELETE() {
+/** DELETE: reset the active product's training history. ?product=<id> */
+export async function DELETE(req: NextRequest) {
   try {
-    await getBrainService().resetTraining();
+    const productId = new URL(req.url).searchParams.get("product") ?? undefined;
+    await getBrainService().resetTraining(productId);
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "unknown error" }, { status: 500 });

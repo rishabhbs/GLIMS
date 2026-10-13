@@ -51,13 +51,25 @@ const JSON_SCHEMA: Record<string, unknown> = {
   },
 };
 
-export function buildExtractionSchema(entityTypeKeys: string[]): StructuredSchema<ExtractionResult> {
+/** Optional product context so extraction is scoped to the right product. */
+export interface ExtractionProduct {
+  name: string;
+  oneLiner?: string;
+}
+
+export function buildExtractionSchema(
+  entityTypeKeys: string[],
+  product?: ExtractionProduct,
+): StructuredSchema<ExtractionResult> {
+  const subject = product
+    ? `the product '${product.name}'${product.oneLiner ? ` (${product.name} is ${product.oneLiner})` : ""}`
+    : "the product the text describes";
   return {
     name: "knowledge_extraction",
     jsonSchema: JSON_SCHEMA,
     parse: (raw) => ExtractionResultSchema.parse(raw),
     instruction:
-      "You extract atomic product-knowledge items about the LIMS product 'Sampleify' from the provided text.\n" +
+      `You extract atomic product-knowledge items about ${subject} from the provided text.\n` +
       "Rules:\n" +
       "- Produce ONE claim per item. Keep each claim a single, self-contained statement.\n" +
       `- Choose entity_type from exactly these keys: ${entityTypeKeys.join(", ")}.\n` +

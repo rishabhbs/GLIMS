@@ -70,11 +70,13 @@ function mkId(): string {
 function seedInstructions(): Omit<GlobalInstruction, "id" | "createdAt" | "updatedAt">[] {
   return [
     {
-      title: "Subject & audience",
+      title: "Audience & tone",
       category: "identity",
       enabled: true,
       locked: false,
-      text: `Every post is about "Sampleify", a LIMS (lab information management system). Write for a working lab owner / QA manager, not a marketing audience. Sound like one practitioner talking to another: concrete, a little blunt, no hype.`,
+      // Product-specific subject/audience comes from the product identity block;
+      // this is the company-wide tone that applies to every product.
+      text: `Write for the working practitioner who would actually use the product, not a marketing audience. Sound like one practitioner talking to another: concrete, a little blunt, no hype.`,
     },
     {
       title: "Grounding — never invent",

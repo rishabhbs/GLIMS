@@ -24,27 +24,51 @@ type SavedPosts = { workspaceId: string; posts: SavedPost[]; updatedAt: string }
 
 const AUTHOR = { name: "Deepak Cybit", title: "Building Sampleify LIMS", initials: "DC" };
 
+type ProductOpt = { id: string; slug: string; name: string };
+
 export function SavedClient() {
   const router = useRouter();
+  const [products, setProducts] = useState<ProductOpt[]>([]);
+  const [productId, setProductId] = useState<string>("");
   const [sp, setSp] = useState<SavedPosts | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState<Record<string, string>>({});
   const [flash, setFlash] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (pid: string) => {
     setLoading(true);
     try {
-      const res = await fetch("/api/social/saved");
+      const q = pid ? `?product=${encodeURIComponent(pid)}` : "";
+      const res = await fetch(`/api/social/saved${q}`);
       if (res.ok) setSp(await res.json());
     } finally {
       setLoading(false);
     }
   }, []);
 
+  // Boot: load products, pick the active one (shared with the Playground via
+  // localStorage), then load that product's saved posts.
   useEffect(() => {
-    load();
+    (async () => {
+      const res = await fetch("/api/social/products");
+      const list: ProductOpt[] = res.ok ? (await res.json()).products ?? [] : [];
+      setProducts(list);
+      const saved = typeof window !== "undefined" ? localStorage.getItem("glims.product") : null;
+      const active = (saved && list.some((p) => p.id === saved) ? saved : list[0]?.id) ?? "";
+      setProductId(active);
+      await load(active);
+    })();
   }, [load]);
+
+  const switchProduct = useCallback(
+    async (id: string) => {
+      setProductId(id);
+      if (typeof window !== "undefined") localStorage.setItem("glims.product", id);
+      await load(id);
+    },
+    [load],
+  );
 
   const saveNote = useCallback(
     async (post: SavedPost) => {
@@ -55,25 +79,26 @@ export function SavedClient() {
         const res = await fetch("/api/social/saved", {
           method: "PATCH",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ id: post.id, note: next }),
+          body: JSON.stringify({ id: post.id, note: next, productId }),
         });
         if (res.ok) setSp(await res.json());
       } finally {
         setBusy(null);
       }
     },
-    [noteDraft],
+    [noteDraft, productId],
   );
 
   const remove = useCallback(async (id: string) => {
     setBusy(id);
     try {
-      const res = await fetch(`/api/social/saved?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      const q = productId ? `&product=${encodeURIComponent(productId)}` : "";
+      const res = await fetch(`/api/social/saved?id=${encodeURIComponent(id)}${q}`, { method: "DELETE" });
       if (res.ok) setSp(await res.json());
     } finally {
       setBusy(null);
     }
-  }, []);
+  }, [productId]);
 
   const copy = useCallback(async (post: SavedPost) => {
     const text = post.hashtags.length
@@ -91,20 +116,28 @@ export function SavedClient() {
         const res = await fetch("/api/social/train/open", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ savedId: post.id }),
+          body: JSON.stringify({ savedId: post.id, productId }),
         });
         if (res.ok) router.push("/playground");
       } finally {
         setBusy(null);
       }
     },
-    [router],
+    [router, productId],
   );
 
   return (
     <div className="saved">
       <div className="saved-head">
-        <h1>Saved</h1>
+        <div className="saved-head-row">
+          <h1>Saved</h1>
+          <div className="product-picker">
+            <span className="product-picker-label">Product</span>
+            <select className="product-select" value={productId} onChange={(e) => switchProduct(e.target.value)}>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+        </div>
         <p className="lead">
           Your gold standard. Posts you save in the Playground become verified exemplars, the Studio writes future posts to match these more than anything else. Open any one to keep refining it.
         </p>

@@ -294,15 +294,25 @@ export class Repositories {
     return data;
   }
 
-  /** Candidate items of the same entity type for dedupe/conflict comparison. */
-  async candidateItemsByType(workspaceId: string, entityType: string, limit = 200) {
-    const { data, error } = await this.db
+  /**
+   * Candidate items of the same entity type for dedupe/conflict comparison.
+   * Scoped to a product when provided so one product's knowledge is never
+   * deduped into another's (each product is its own knowledge base).
+   */
+  async candidateItemsByType(
+    workspaceId: string,
+    entityType: string,
+    productId?: string | null,
+    limit = 200,
+  ) {
+    let q = this.db
       .from("knowledge_items")
       .select("id,title,claim,status,confidence,embedding")
       .eq("workspace_id", workspaceId)
       .eq("entity_type", entityType)
-      .not("status", "in", "(archived,invalidated)")
-      .limit(limit);
+      .not("status", "in", "(archived,invalidated)");
+    if (productId) q = q.eq("product_id", productId);
+    const { data, error } = await q.limit(limit);
     if (error) throw error;
     return data;
   }
@@ -382,7 +392,7 @@ export class Repositories {
     if (ids.length === 0) return [];
     const { data, error } = await this.db
       .from("knowledge_items")
-      .select("id,entity_type,title,claim,body,status,source_classification,confidence")
+      .select("id,product_id,entity_type,title,claim,body,status,source_classification,confidence")
       .in("id", ids);
     if (error) throw error;
     return data;
@@ -563,5 +573,34 @@ export class Repositories {
       .eq("workspace_id", workspaceId)
       .eq("key", key);
     if (error) throw error;
+  }
+
+  // ── Products ────────────────────────────────────────────────────────────
+  async listProducts(workspaceId: string) {
+    const { data, error } = await this.db
+      .from("products")
+      .select("*")
+      .eq("workspace_id", workspaceId)
+      .eq("active", true)
+      .order("sort_order", { ascending: true });
+    if (error) throw error;
+    return data ?? [];
+  }
+
+  async getProduct(id: string) {
+    const { data, error } = await this.db.from("products").select("*").eq("id", id).maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+
+  async getProductBySlug(workspaceId: string, slug: string) {
+    const { data, error } = await this.db
+      .from("products")
+      .select("*")
+      .eq("workspace_id", workspaceId)
+      .eq("slug", slug)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
   }
 }

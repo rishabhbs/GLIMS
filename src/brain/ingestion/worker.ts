@@ -33,6 +33,33 @@ export interface ProcessResult {
   error?: string;
 }
 
+/**
+ * Remove unpaired UTF-16 surrogate code units. These can appear in scraped DOM
+ * text and are not valid in JSON stored by Postgres (error 22P02), which would
+ * fail chunk/item inserts. Valid surrogate pairs (real emoji) are preserved.
+ */
+function sanitizeText(input: string): string {
+  // Drop a high surrogate not followed by a low surrogate, and a low surrogate
+  // not preceded by a high surrogate.
+  return input
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, "")
+    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "")
+    // Also strip NULs, which Postgres text/json also rejects.
+    .replace(/\u0000/g, "");
+}
+
+/** Recursively strip lone surrogates / NULs from every string in a value. */
+function sanitizeDeep<T>(value: T): T {
+  if (typeof value === "string") return sanitizeText(value) as unknown as T;
+  if (Array.isArray(value)) return value.map((v) => sanitizeDeep(v)) as unknown as T;
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) out[sanitizeText(k)] = sanitizeDeep(v);
+    return out as unknown as T;
+  }
+  return value;
+}
+
 /** Find the exact char range of a verbatim snippet within the source text. */
 function locateSnippet(sourceText: string, snippet: string): { char_start: number; char_end: number } | null {
   const idx = sourceText.indexOf(snippet);
@@ -48,6 +75,7 @@ export async function processJob(jobId: string, deps: IngestionDeps): Promise<Pr
   if (!source) throw new Error(`source ${job.source_id} not found`);
 
   const workspaceId = job.workspace_id;
+  const productId = (source as { product_id?: string | null }).product_id ?? null;
   let chunksCount = 0;
   let itemsCreated = 0;
   let duplicates = 0;
@@ -67,7 +95,9 @@ export async function processJob(jobId: string, deps: IngestionDeps): Promise<Pr
       },
       { provider, storage: deps.storage },
     );
-    const sourceText = extracted.text ?? "";
+    // Strip lone/broken UTF-16 surrogates: they survive in extracted DOM/text
+    // but Postgres rejects them inside JSON values (code 22P02), failing inserts.
+    const sourceText = sanitizeText(extracted.text ?? "");
     await repos.updateSource(source.id, {
       raw_text: sourceText,
       extraction_method: extracted.method,
@@ -91,7 +121,9 @@ export async function processJob(jobId: string, deps: IngestionDeps): Promise<Pr
         workspace_id: workspaceId,
         source_id: source.id,
         ordinal: c.ordinal,
-        content: c.content,
+        // chunkText may hard-split an oversized paragraph mid-surrogate-pair,
+        // leaving a lone surrogate at a chunk boundary — strip it here.
+        content: sanitizeText(c.content),
         locator: c.locator,
         embedding: toVectorLiteral(vectors[i]),
         embedding_model: model ?? embeddingModel,
@@ -103,7 +135,14 @@ export async function processJob(jobId: string, deps: IngestionDeps): Promise<Pr
     await repos.updateJob(jobId, { status: "extracting" });
     const entityTypes = await repos.listEntityTypes();
     const typeKeys = (entityTypes ?? []).map((t) => t.key);
-    const schema = buildExtractionSchema(typeKeys);
+    // Scope extraction to this source's product so the model extracts knowledge
+    // about the right product (not a hardcoded one).
+    let product: { name: string; oneLiner?: string } | undefined;
+    if (productId) {
+      const prow = await repos.getProduct(productId);
+      if (prow) product = { name: prow.name, oneLiner: prow.one_liner };
+    }
+    const schema = buildExtractionSchema(typeKeys, product);
 
     // Extract over the full text (bounded) — keeps claims coherent across chunks.
     const extraction = await provider.structuredExtract(sourceText.slice(0, 24000), schema, {
@@ -125,8 +164,9 @@ export async function processJob(jobId: string, deps: IngestionDeps): Promise<Pr
       const it = validItems[i];
       const embedding = claimVectors[i] ?? null;
 
-      // Candidate pool of same-type items.
-      const poolRaw = await repos.candidateItemsByType(workspaceId, it.entity_type);
+      // Candidate pool of same-type items, scoped to this source's product so
+      // one product's knowledge never dedupes into another's.
+      const poolRaw = await repos.candidateItemsByType(workspaceId, it.entity_type, productId);
       const pool: Comparable[] = (poolRaw ?? []).map((p) => ({
         id: p.id,
         title: p.title,
@@ -147,14 +187,15 @@ export async function processJob(jobId: string, deps: IngestionDeps): Promise<Pr
       // Create the new item (always 'candidate' — human promotes to confirmed).
       const created = await repos.insertKnowledgeItem({
         workspace_id: workspaceId,
+        product_id: productId,
         entity_type: it.entity_type,
-        title: it.title,
-        claim: it.claim,
-        body: it.body ?? null,
+        title: sanitizeText(it.title),
+        claim: sanitizeText(it.claim),
+        body: it.body ? sanitizeText(it.body) : null,
         status: decision.kind === "conflict" ? "conflicted" : "candidate",
         source_classification: it.source_classification,
         confidence: it.confidence,
-        attributes: asJson(it.attributes ?? {}),
+        attributes: asJson(sanitizeDeep(it.attributes ?? {})),
         embedding: embedding ? toVectorLiteral(embedding) : null,
         embedding_model: embeddingModel,
       });
@@ -219,12 +260,13 @@ async function linkEvidence(
   snippet: string,
   sourceText: string,
 ) {
-  const locator = locateSnippet(sourceText, snippet);
+  const clean = sanitizeText(snippet);
+  const locator = locateSnippet(sourceText, clean);
   await repos.insertEvidence({
     workspace_id: workspaceId,
     item_id: itemId,
     source_id: sourceId,
-    snippet,
+    snippet: clean,
     locator: locator ?? undefined,
   });
 }

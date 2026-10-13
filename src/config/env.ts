@@ -71,6 +71,14 @@ export function getServerConfig() {
       googleApiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
       geminiResearchModel: optional(process.env.BRAIN_RESEARCH_MODEL, "gemini-flash-latest"),
     },
+    image: {
+      // Post-graphic image generation. Azure preferred when all three are set;
+      // else falls back to OpenAI (OPENAI_API_KEY). Resolved in providers/image.ts.
+      azureEndpoint: process.env.AZURE_IMAGE_ENDPOINT,
+      azureApiKey: process.env.AZURE_IMAGE_APIKEY,
+      azureDeployment: process.env.AZURE_IMAGE_DEPLOYMENT,
+      azureApiVersion: optional(process.env.AZURE_IMAGE_API_VERSION, "preview"),
+    },
     defaultWorkspaceId: optional(
       process.env.BRAIN_DEFAULT_WORKSPACE_ID,
       "00000000-0000-0000-0000-000000000001",

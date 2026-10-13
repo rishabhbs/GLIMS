@@ -43,12 +43,13 @@ export interface CorrectionProposal {
   destinationLabel: string;
 }
 
-const ROUTER_SYSTEM = `You classify a user's CORRECTION of an AI-generated LinkedIn post about "Sampleify" (a LIMS), and extract the durable knowledge to remember.
+function routerSystem(productName: string): string {
+  return `You classify a user's CORRECTION of an AI-generated LinkedIn post about "${productName}", and extract the durable knowledge to remember.
 The AI wrote something the user is correcting. Decide which ONE category the correction is, and extract a general, reusable statement.
 
 Categories:
-- "product": a fact about the Sampleify PRODUCT itself the AI got wrong or assumed (what it does / doesn't do, how a feature works, a metric). Belongs in the product knowledge base.
-- "world": a fact about how REAL LABS work in general that the AI got wrong (e.g. "results never sit in email; they are entered manually or pulled from instruments"). Not about the product.
+- "product": a fact about the ${productName} PRODUCT itself the AI got wrong or assumed (what it does / doesn't do, how a feature works, a metric). Belongs in the product knowledge base.
+- "world": a fact about how the REAL WORLD / the industry works in general that the AI got wrong (e.g. "results never sit in email; they are entered manually or pulled from instruments"). Not about the product, and true regardless of which product we write for.
 - "audience": a wrong assumption about WHO we write for or what they do (e.g. "senior analysts never run tests" is false because in small labs everyone does everything). Corrects persona/audience understanding.
 - "style": a voice/format/tone preference (e.g. "no story narration, state facts"). Not a fact at all.
 - "oneoff": a change that only applies to THIS post with no reusable lesson (e.g. "cut the last line", "shorter hook").
@@ -57,13 +58,14 @@ Rules:
 - Pick the single best category.
 - "statement" must be general and reusable, phrased as a standalone truth/rule, NOT about this specific post. For "oneoff", set it to "".
 - For "world", also fill "avoid" with the false assumption to never make again; otherwise "avoid" = "".
-- Do not invent product capabilities. If a product correction only says what is FALSE without a clear replacement truth, still capture the correction as the statement (e.g. "Sampleify does not do X").
+- Do not invent product capabilities. If a product correction only says what is FALSE without a clear replacement truth, still capture the correction as the statement (e.g. "${productName} does not do X").
 
 OUTPUT ONLY JSON: { "category": "product|world|audience|style|oneoff", "statement": string, "avoid": string, "summary": string }`;
+}
 
 const DEST_LABEL: Record<CorrectionCategory, string> = {
   product: "Product knowledge (the Brain's real knowledge graph)",
-  world: "Real-world lab facts",
+  world: "Real-world facts",
   audience: "Audience understanding",
   style: "Style guide",
   oneoff: "This post only",
@@ -77,13 +79,14 @@ export async function routeCorrection(
   note: string,
   offendingBody: string,
   provider: ModelProvider,
+  productName: string,
 ): Promise<CorrectionProposal | null> {
   if (!note.trim()) return null;
   const user = `POST THE AI WROTE:\n${offendingBody}\n\nUSER CORRECTION:\n${note}\n\nClassify and extract.`;
   try {
     const res = await provider.chat(
       [
-        { role: "system", content: ROUTER_SYSTEM },
+        { role: "system", content: routerSystem(productName) },
         { role: "user", content: user },
       ],
       { temperature: 0.2, maxTokens: 400 },

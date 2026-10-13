@@ -107,6 +107,7 @@ import {
   type SavePostInput,
 } from "./social/saved-posts";
 import { applyStudioCorrection, recordMediaRevision, saveCurrentPost, openSavedPost, revertToTurn, editTurnBody, type ConfirmCorrectionRouteInput } from "./social/training";
+import { listProducts, resolveProduct, type Product } from "./social/products";
 import { loadAudienceModel, addAudienceNotes, updateAudienceNote, removeAudienceNote, type AudienceModel } from "./social/audience";
 import {
   loadLabFacts,
@@ -147,60 +148,62 @@ export interface BrainService {
   // web research
   promoteFinding(input: PromoteFindingInput): Promise<{ sourceId: string; itemId: string }>;
   listResearchSessions(): Promise<ResearchSessionSummary[]>;
+  // products (multi-product dimension; the active product scopes generation)
+  listProducts(): Promise<Product[]>;
   // social media studio (grounded content generation; a Brain consumer)
-  studioTurn(input: StudioTurnInput): Promise<StudioTurnResult>;
+  studioTurn(input: StudioTurnInput & { productId?: string }): Promise<StudioTurnResult>;
   // social calendar operations (calendar-first Studio)
-  planCalendar(input: PlanCalendarInput): Promise<PlanCalendarResult>;
-  draftPosts(input: DraftPostsInput): Promise<DraftPostsResult>;
-  revisePost(input: RevisePostInput): Promise<RevisePostResult>;
+  planCalendar(input: PlanCalendarInput & { productId?: string }): Promise<PlanCalendarResult>;
+  draftPosts(input: DraftPostsInput & { productId?: string }): Promise<DraftPostsResult>;
+  revisePost(input: RevisePostInput & { productId?: string }): Promise<RevisePostResult>;
   // learned style guide (persistent writing preferences)
-  getStyleGuide(): Promise<StyleGuide>;
-  addStyleRule(rule: string): Promise<StyleGuide>;
-  removeStyleRule(ruleId: string): Promise<StyleGuide>;
+  getStyleGuide(productId?: string): Promise<StyleGuide>;
+  addStyleRule(rule: string, productId?: string): Promise<StyleGuide>;
+  removeStyleRule(ruleId: string, productId?: string): Promise<StyleGuide>;
   // persisted calendar (survives reloads)
   getCalendar(): Promise<StoredCalendar>;
   saveCalendar(data: { slots: CalSlot[]; citations: CalCitation[]; brief: string }): Promise<StoredCalendar>;
   clearCalendar(): Promise<void>;
   // training loop (rate one post at a time; teaches the style memory)
-  getTraining(): Promise<TrainingState>;
-  generateTrainingPost(input: GenerateTrainingInput): Promise<TrainingPost>;
-  submitTrainingFeedback(input: SubmitFeedbackInput): Promise<SubmitFeedbackResult>;
-  resolveInstructionConflict(input: ResolveConflictInput): Promise<{ ok: true; applied: ResolveConflictInput["resolution"] }>;
-  resetTraining(): Promise<void>;
+  getTraining(productId?: string): Promise<TrainingState>;
+  generateTrainingPost(input: GenerateTrainingInput & { productId?: string }): Promise<TrainingPost>;
+  submitTrainingFeedback(input: SubmitFeedbackInput & { productId?: string }): Promise<SubmitFeedbackResult>;
+  resolveInstructionConflict(input: ResolveConflictInput & { productId?: string }): Promise<{ ok: true; applied: ResolveConflictInput["resolution"] }>;
+  resetTraining(productId?: string): Promise<void>;
   // calendar revise-time conflict resolution
-  resolveCalendarConflict(input: ResolveCalendarConflictInput): Promise<{ ok: true; applied: ResolveCalendarConflictInput["resolution"] }>;
-  // editable global writing instructions (the base policy, as data)
+  resolveCalendarConflict(input: ResolveCalendarConflictInput & { productId?: string }): Promise<{ ok: true; applied: ResolveCalendarConflictInput["resolution"] }>;
+  // editable global writing instructions (the base policy, as data; company-wide)
   getGlobalInstructions(): Promise<GlobalInstructions>;
   addGlobalInstruction(input: { title: string; text: string; category?: InstructionCategory }): Promise<GlobalInstructions>;
   updateGlobalInstruction(id: string, patch: Partial<Pick<GlobalInstruction, "title" | "text" | "category" | "enabled">>): Promise<GlobalInstructions>;
   removeGlobalInstruction(id: string): Promise<GlobalInstructions>;
   resetGlobalInstructions(): Promise<GlobalInstructions>;
-  // saved posts — the user's curated gold standard (verified exemplars)
-  getSavedPosts(): Promise<SavedPosts>;
-  savePost(input: SavePostInput): Promise<SavedPosts>;
-  savePlaygroundPost(note?: string): Promise<{ ok: boolean }>;
-  updateSavedPostNote(id: string, note: string): Promise<SavedPosts>;
-  removeSavedPost(id: string): Promise<SavedPosts>;
-  // real-world lab facts — the Studio's world model (prevents factual fabrication)
+  // saved posts — the user's curated gold standard (verified exemplars), per product
+  getSavedPosts(productId?: string): Promise<SavedPosts>;
+  savePost(input: SavePostInput & { productId?: string }): Promise<SavedPosts>;
+  savePlaygroundPost(productId?: string, note?: string): Promise<{ ok: boolean }>;
+  updateSavedPostNote(id: string, note: string, productId?: string): Promise<SavedPosts>;
+  removeSavedPost(id: string, productId?: string): Promise<SavedPosts>;
+  // real-world facts — shared company world model (prevents factual fabrication)
   getLabFacts(): Promise<LabFacts>;
   addLabFacts(additions: AddLabFactInput[]): Promise<LabFacts>;
   updateLabFact(id: string, patch: Partial<Pick<LabFact, "statement" | "kind">>): Promise<LabFacts>;
   removeLabFact(id: string): Promise<LabFacts>;
-  // audience model — who the Studio writes for (corrects persona assumptions)
+  // audience model — shared company understanding of who we write for
   getAudienceModel(): Promise<AudienceModel>;
   addAudienceNotes(statements: string[]): Promise<AudienceModel>;
   updateAudienceNote(id: string, statement: string): Promise<AudienceModel>;
   removeAudienceNote(id: string): Promise<AudienceModel>;
   // unified correction router: route a confirmed correction to the right memory
-  confirmStudioCorrection(input: ConfirmCorrectionRouteInput): Promise<{ routedTo: string }>;
+  confirmStudioCorrection(input: ConfirmCorrectionRouteInput & { productId?: string }): Promise<{ routedTo: string }>;
   // reopen a saved post into the Playground with its full conversation
-  openSavedPost(savedId: string): Promise<TrainingState>;
+  openSavedPost(savedId: string, productId?: string): Promise<TrainingState>;
   // revert the current post's body to an earlier turn's output
-  revertToTurn(turnId: string): Promise<TrainingState>;
+  revertToTurn(turnId: string, productId?: string): Promise<TrainingState>;
   // manually edit an assistant body turn verbatim (inline edit in chat)
-  editTurnBody(turnId: string, body: string): Promise<TrainingState>;
+  editTurnBody(turnId: string, body: string, productId?: string): Promise<TrainingState>;
   // AI-authored post graphic (non-templated SVG)
-  generateGraphic(input: GenerateGraphicInput & { postId?: string; record?: boolean }): Promise<GraphicResult>;
+  generateGraphic(input: GenerateGraphicInput & { postId?: string; record?: boolean; productId?: string }): Promise<GraphicResult>;
 }
 
 export class DefaultBrainService implements BrainService {
@@ -226,6 +229,7 @@ export class DefaultBrainService implements BrainService {
 
     const source = await this.repos.insertSource({
       workspace_id: this.workspaceId,
+      product_id: input.productId ?? null,
       type: input.type,
       title: input.title ?? null,
       uri: input.uri ?? null,
@@ -498,29 +502,43 @@ export class DefaultBrainService implements BrainService {
     return answerQuestion(q, this.converseDeps());
   }
 
+  // ── products ──────────────────────────────────────────────────────────────
+  async listProducts(): Promise<Product[]> {
+    return listProducts(this.workspaceId);
+  }
+
+  /** Resolve the active product (by id, else the first product) for a session. */
+  private async resolveProduct(productId?: string | null): Promise<Product> {
+    const p = await resolveProduct(this.workspaceId, productId);
+    if (!p) throw new Error("No products configured for this workspace.");
+    return p;
+  }
+
   // ── social media studio ───────────────────────────────────────────────────
-  private socialDeps() {
-    return { repos: this.repos, provider: this.provider, workspaceId: this.workspaceId };
+  /** Build the social deps bundle for a resolved product. */
+  private async socialDeps(productId?: string | null) {
+    const product = await this.resolveProduct(productId);
+    return { repos: this.repos, provider: this.provider, workspaceId: this.workspaceId, product };
   }
 
-  async studioTurn(input: StudioTurnInput): Promise<StudioTurnResult> {
-    return studioTurn(input, this.socialDeps());
+  async studioTurn(input: StudioTurnInput & { productId?: string }): Promise<StudioTurnResult> {
+    return studioTurn(input, await this.socialDeps(input.productId));
   }
 
-  async planCalendar(input: PlanCalendarInput): Promise<PlanCalendarResult> {
-    return planCalendar(input, this.socialDeps());
+  async planCalendar(input: PlanCalendarInput & { productId?: string }): Promise<PlanCalendarResult> {
+    return planCalendar(input, await this.socialDeps(input.productId));
   }
 
-  async draftPosts(input: DraftPostsInput): Promise<DraftPostsResult> {
-    return draftPosts(input, this.socialDeps());
+  async draftPosts(input: DraftPostsInput & { productId?: string }): Promise<DraftPostsResult> {
+    return draftPosts(input, await this.socialDeps(input.productId));
   }
 
-  async revisePost(input: RevisePostInput): Promise<RevisePostResult> {
-    return revisePost(input, this.socialDeps());
+  async revisePost(input: RevisePostInput & { productId?: string }): Promise<RevisePostResult> {
+    return revisePost(input, await this.socialDeps(input.productId));
   }
 
-  async resolveCalendarConflict(input: ResolveCalendarConflictInput) {
-    return resolveCalendarConflict(input, this.socialDeps());
+  async resolveCalendarConflict(input: ResolveCalendarConflictInput & { productId?: string }) {
+    return resolveCalendarConflict(input, await this.socialDeps(input.productId));
   }
 
   async getGlobalInstructions(): Promise<GlobalInstructions> {
@@ -546,26 +564,31 @@ export class DefaultBrainService implements BrainService {
     return resetGlobalInstructions(this.workspaceId);
   }
 
-  async getSavedPosts(): Promise<SavedPosts> {
-    return loadSavedPosts(this.workspaceId);
+  async getSavedPosts(productId?: string): Promise<SavedPosts> {
+    const p = await this.resolveProduct(productId);
+    return loadSavedPosts(this.workspaceId, p.id);
   }
 
-  async savePost(input: SavePostInput): Promise<SavedPosts> {
-    return savePost(this.workspaceId, input);
+  async savePost(input: SavePostInput & { productId?: string }): Promise<SavedPosts> {
+    const p = await this.resolveProduct(input.productId);
+    return savePost(this.workspaceId, p.id, input);
   }
 
   /** Save the post currently open in the Playground, with its full conversation. */
-  async savePlaygroundPost(note?: string): Promise<{ ok: boolean }> {
-    const ok = await saveCurrentPost(this.workspaceId, note);
+  async savePlaygroundPost(productId?: string, note?: string): Promise<{ ok: boolean }> {
+    const p = await this.resolveProduct(productId);
+    const ok = await saveCurrentPost(this.workspaceId, p.id, note);
     return { ok };
   }
 
-  async updateSavedPostNote(id: string, note: string): Promise<SavedPosts> {
-    return updateSavedPostNote(this.workspaceId, id, note);
+  async updateSavedPostNote(id: string, note: string, productId?: string): Promise<SavedPosts> {
+    const p = await this.resolveProduct(productId);
+    return updateSavedPostNote(this.workspaceId, p.id, id, note);
   }
 
-  async removeSavedPost(id: string): Promise<SavedPosts> {
-    return removeSavedPost(this.workspaceId, id);
+  async removeSavedPost(id: string, productId?: string): Promise<SavedPosts> {
+    const p = await this.resolveProduct(productId);
+    return removeSavedPost(this.workspaceId, p.id, id);
   }
 
   async getLabFacts(): Promise<LabFacts> {
@@ -606,7 +629,7 @@ export class DefaultBrainService implements BrainService {
    * into the REAL knowledge_items graph via the first-class correction path
    * (versioned, audited), reusing a persistent "Studio corrections" conversation.
    */
-  async confirmStudioCorrection(input: ConfirmCorrectionRouteInput): Promise<{ routedTo: string }> {
+  async confirmStudioCorrection(input: ConfirmCorrectionRouteInput & { productId?: string }): Promise<{ routedTo: string }> {
     if (input.category === "product") {
       const conversationId = await this.ensureStudioCorrectionConversation();
       const preview = await this.previewCorrection({
@@ -621,9 +644,9 @@ export class DefaultBrainService implements BrainService {
       });
       return { routedTo: "Product knowledge graph" };
     }
-    await applyStudioCorrection(input, this.socialDeps());
+    await applyStudioCorrection(input, await this.socialDeps(input.productId));
     const label =
-      input.category === "world" ? "Real-world lab facts" : input.category === "audience" ? "Audience understanding" : "Style guide";
+      input.category === "world" ? "Real-world facts" : input.category === "audience" ? "Audience understanding" : "Style guide";
     return { routedTo: label };
   }
 
@@ -639,28 +662,33 @@ export class DefaultBrainService implements BrainService {
     return conv.id;
   }
 
-  async openSavedPost(savedId: string): Promise<TrainingState> {
-    return openSavedPost(savedId, this.socialDeps());
+  async openSavedPost(savedId: string, productId?: string): Promise<TrainingState> {
+    return openSavedPost(savedId, await this.socialDeps(productId));
   }
 
-  async revertToTurn(turnId: string): Promise<TrainingState> {
-    return revertToTurn(this.workspaceId, turnId);
+  async revertToTurn(turnId: string, productId?: string): Promise<TrainingState> {
+    const p = await this.resolveProduct(productId);
+    return revertToTurn(this.workspaceId, p.id, turnId);
   }
 
-  async editTurnBody(turnId: string, body: string): Promise<TrainingState> {
-    return editTurnBody(this.workspaceId, turnId, body);
+  async editTurnBody(turnId: string, body: string, productId?: string): Promise<TrainingState> {
+    const p = await this.resolveProduct(productId);
+    return editTurnBody(this.workspaceId, p.id, turnId, body);
   }
 
-  async getStyleGuide(): Promise<StyleGuide> {
-    return loadStyleGuide(this.workspaceId);
+  async getStyleGuide(productId?: string): Promise<StyleGuide> {
+    const p = await this.resolveProduct(productId);
+    return loadStyleGuide(this.workspaceId, p.id);
   }
 
-  async addStyleRule(rule: string): Promise<StyleGuide> {
-    return addStyleRules(this.workspaceId, [{ rule, source: "manual" }]);
+  async addStyleRule(rule: string, productId?: string): Promise<StyleGuide> {
+    const p = await this.resolveProduct(productId);
+    return addStyleRules(this.workspaceId, p.id, [{ rule, source: "manual" }]);
   }
 
-  async removeStyleRule(ruleId: string): Promise<StyleGuide> {
-    return removeStyleRule(this.workspaceId, ruleId);
+  async removeStyleRule(ruleId: string, productId?: string): Promise<StyleGuide> {
+    const p = await this.resolveProduct(productId);
+    return removeStyleRule(this.workspaceId, p.id, ruleId);
   }
 
   async getCalendar(): Promise<StoredCalendar> {
@@ -675,35 +703,38 @@ export class DefaultBrainService implements BrainService {
     return clearCalendar(this.workspaceId);
   }
 
-  async getTraining(): Promise<TrainingState> {
-    return loadTraining(this.workspaceId);
+  async getTraining(productId?: string): Promise<TrainingState> {
+    const p = await this.resolveProduct(productId);
+    return loadTraining(this.workspaceId, p.id);
   }
 
-  async generateTrainingPost(input: GenerateTrainingInput): Promise<TrainingPost> {
-    return generateTrainingPost(input, this.socialDeps());
+  async generateTrainingPost(input: GenerateTrainingInput & { productId?: string }): Promise<TrainingPost> {
+    return generateTrainingPost(input, await this.socialDeps(input.productId));
   }
 
-  async submitTrainingFeedback(input: SubmitFeedbackInput): Promise<SubmitFeedbackResult> {
-    return submitTrainingFeedback(input, this.socialDeps());
+  async submitTrainingFeedback(input: SubmitFeedbackInput & { productId?: string }): Promise<SubmitFeedbackResult> {
+    return submitTrainingFeedback(input, await this.socialDeps(input.productId));
   }
 
-  async resolveInstructionConflict(input: ResolveConflictInput) {
-    return resolveInstructionConflict(input, this.socialDeps());
+  async resolveInstructionConflict(input: ResolveConflictInput & { productId?: string }) {
+    return resolveInstructionConflict(input, await this.socialDeps(input.productId));
   }
 
-  async resetTraining(): Promise<void> {
-    return resetTraining(this.workspaceId);
+  async resetTraining(productId?: string): Promise<void> {
+    const p = await this.resolveProduct(productId);
+    return resetTraining(this.workspaceId, p.id);
   }
 
-  async generateGraphic(input: GenerateGraphicInput & { postId?: string; record?: boolean }): Promise<GraphicResult> {
+  async generateGraphic(input: GenerateGraphicInput & { postId?: string; record?: boolean; productId?: string }): Promise<GraphicResult> {
     const result = await generateGraphic(input, this.provider);
     if (input.postId) {
       try {
-        await setPendingGraphic(this.workspaceId, input.postId, result.png);
+        const p = await this.resolveProduct(input.productId);
+        await setPendingGraphic(this.workspaceId, p.id, input.postId, result.png);
         // Record a media turn in the post's conversation (direction + image),
         // but not for the initial auto-graphic (record === false).
         if (input.record !== false) {
-          await recordMediaRevision(this.workspaceId, input.direction ?? "", result.png);
+          await recordMediaRevision(this.workspaceId, p.id, input.direction ?? "", result.png);
         }
       } catch {
         // non-fatal; the client still has the image

@@ -85,6 +85,8 @@ export interface IngestInput {
   sensitivity?: "normal" | "sensitive";
   extractionMethod?: string;
   addedBy?: string | null;
+  /** Scope this source (and the knowledge it yields) to a product. */
+  productId?: string | null;
 }
 
 // ── Ask + teach ───────────────────────────────────────────────────────────────

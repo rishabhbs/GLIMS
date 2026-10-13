@@ -10,11 +10,11 @@ export const maxDuration = 30;
  */
 export async function POST(req: NextRequest) {
   try {
-    const b = (await req.json()) as { turnId?: string; body?: string };
+    const b = (await req.json()) as { turnId?: string; body?: string; productId?: string };
     if (!b.turnId || typeof b.body !== "string") {
       return NextResponse.json({ error: "turnId and body are required" }, { status: 400 });
     }
-    const state = await getBrainService().editTurnBody(b.turnId, b.body);
+    const state = await getBrainService().editTurnBody(b.turnId, b.body, b.productId);
     return NextResponse.json(state);
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "unknown error" }, { status: 500 });

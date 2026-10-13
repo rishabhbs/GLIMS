@@ -49,11 +49,15 @@ export interface SavedPost {
 
 export interface SavedPosts {
   workspaceId: string;
+  productId: string;
   posts: SavedPost[];
   updatedAt: string;
 }
 
-const KEY = "saved_posts";
+/** Per-product studio_state key for saved posts. */
+function savedKey(productId: string): string {
+  return `saved_posts:${productId}`;
+}
 
 function now(): string {
   return new Date().toISOString();
@@ -63,17 +67,17 @@ function normalizeBody(s: string): string {
   return s.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-export async function loadSavedPosts(workspaceId: string): Promise<SavedPosts> {
-  const value = await new Repositories().getStudioState<SavedPosts>(workspaceId, KEY);
+export async function loadSavedPosts(workspaceId: string, productId: string): Promise<SavedPosts> {
+  const value = await new Repositories().getStudioState<SavedPosts>(workspaceId, savedKey(productId));
   if (value && Array.isArray(value.posts)) {
-    return { workspaceId, posts: value.posts, updatedAt: value.updatedAt };
+    return { workspaceId, productId, posts: value.posts, updatedAt: value.updatedAt };
   }
-  return { workspaceId, posts: [], updatedAt: now() };
+  return { workspaceId, productId, posts: [], updatedAt: now() };
 }
 
 async function save(sp: SavedPosts): Promise<void> {
   sp.updatedAt = now();
-  await new Repositories().setStudioState(sp.workspaceId, KEY, sp);
+  await new Repositories().setStudioState(sp.workspaceId, savedKey(sp.productId), sp);
 }
 
 export interface SavePostInput {
@@ -92,8 +96,8 @@ export interface SavePostInput {
  * reopened in the Playground. Upserts on body: re-saving a refined version of
  * an already-saved post updates it in place (keeps its id + note).
  */
-export async function savePost(workspaceId: string, input: SavePostInput): Promise<SavedPosts> {
-  const sp = await loadSavedPosts(workspaceId);
+export async function savePost(workspaceId: string, productId: string, input: SavePostInput): Promise<SavedPosts> {
+  const sp = await loadSavedPosts(workspaceId, productId);
   const body = input.body.trim();
   if (!body) return sp;
   const key = normalizeBody(body);
@@ -126,14 +130,14 @@ export async function savePost(workspaceId: string, input: SavePostInput): Promi
 }
 
 /** Fetch a single saved post by id. */
-export async function getSavedPost(workspaceId: string, id: string): Promise<SavedPost | null> {
-  const sp = await loadSavedPosts(workspaceId);
+export async function getSavedPost(workspaceId: string, productId: string, id: string): Promise<SavedPost | null> {
+  const sp = await loadSavedPosts(workspaceId, productId);
   return sp.posts.find((p) => p.id === id) ?? null;
 }
 
 /** Update the note on a saved post. */
-export async function updateSavedPostNote(workspaceId: string, id: string, note: string): Promise<SavedPosts> {
-  const sp = await loadSavedPosts(workspaceId);
+export async function updateSavedPostNote(workspaceId: string, productId: string, id: string, note: string): Promise<SavedPosts> {
+  const sp = await loadSavedPosts(workspaceId, productId);
   const post = sp.posts.find((p) => p.id === id);
   if (post) {
     post.note = note.trim();
@@ -142,16 +146,16 @@ export async function updateSavedPostNote(workspaceId: string, id: string, note:
   return sp;
 }
 
-export async function removeSavedPost(workspaceId: string, id: string): Promise<SavedPosts> {
-  const sp = await loadSavedPosts(workspaceId);
+export async function removeSavedPost(workspaceId: string, productId: string, id: string): Promise<SavedPosts> {
+  const sp = await loadSavedPosts(workspaceId, productId);
   sp.posts = sp.posts.filter((p) => p.id !== id);
   await save(sp);
   return sp;
 }
 
 /** True if a body is already saved (so the UI can show a filled "saved" state). */
-export async function isSaved(workspaceId: string, body: string): Promise<boolean> {
-  const sp = await loadSavedPosts(workspaceId);
+export async function isSaved(workspaceId: string, productId: string, body: string): Promise<boolean> {
+  const sp = await loadSavedPosts(workspaceId, productId);
   const key = normalizeBody(body);
   return sp.posts.some((p) => normalizeBody(p.body) === key);
 }

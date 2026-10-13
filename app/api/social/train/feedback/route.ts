@@ -13,6 +13,7 @@ export async function POST(req: NextRequest) {
       body?: string;
       rating?: number;
       feedback?: string;
+      productId?: string;
     };
     if (!b.body || typeof b.rating !== "number") {
       return NextResponse.json({ error: "body and rating are required" }, { status: 400 });
@@ -23,6 +24,7 @@ export async function POST(req: NextRequest) {
       body: b.body,
       rating: b.rating,
       feedback: b.feedback,
+      productId: b.productId,
     });
     return NextResponse.json(result);
   } catch (e) {

@@ -25,29 +25,36 @@ export interface StyleRule {
 
 export interface StyleGuide {
   workspaceId: string;
+  productId: string;
   rules: StyleRule[];
   updatedAt: string;
 }
 
-export async function loadStyleGuide(workspaceId: string): Promise<StyleGuide> {
-  const value = await new Repositories().getStudioState<StyleGuide>(workspaceId, "style_guide");
+/** Per-product studio_state key for the learned style guide. */
+function styleKey(productId: string): string {
+  return `style_guide:${productId}`;
+}
+
+export async function loadStyleGuide(workspaceId: string, productId: string): Promise<StyleGuide> {
+  const value = await new Repositories().getStudioState<StyleGuide>(workspaceId, styleKey(productId));
   if (value && Array.isArray(value.rules)) {
-    return { workspaceId, rules: value.rules, updatedAt: value.updatedAt };
+    return { workspaceId, productId, rules: value.rules, updatedAt: value.updatedAt };
   }
-  return { workspaceId, rules: [], updatedAt: new Date().toISOString() };
+  return { workspaceId, productId, rules: [], updatedAt: new Date().toISOString() };
 }
 
 export async function saveStyleGuide(guide: StyleGuide): Promise<void> {
   guide.updatedAt = new Date().toISOString();
-  await new Repositories().setStudioState(guide.workspaceId, "style_guide", guide);
+  await new Repositories().setStudioState(guide.workspaceId, styleKey(guide.productId), guide);
 }
 
 /** Add rules, de-duplicating against near-identical existing ones. */
 export async function addStyleRules(
   workspaceId: string,
+  productId: string,
   additions: Array<{ rule: string; source: string }>,
 ): Promise<StyleGuide> {
-  const guide = await loadStyleGuide(workspaceId);
+  const guide = await loadStyleGuide(workspaceId, productId);
   const existing = new Set(guide.rules.map((r) => normalize(r.rule)));
   for (const a of additions) {
     const rule = a.rule.trim();
@@ -66,8 +73,8 @@ export async function addStyleRules(
   return guide;
 }
 
-export async function removeStyleRule(workspaceId: string, ruleId: string): Promise<StyleGuide> {
-  const guide = await loadStyleGuide(workspaceId);
+export async function removeStyleRule(workspaceId: string, productId: string, ruleId: string): Promise<StyleGuide> {
+  const guide = await loadStyleGuide(workspaceId, productId);
   guide.rules = guide.rules.filter((r) => r.id !== ruleId);
   await saveStyleGuide(guide);
   return guide;

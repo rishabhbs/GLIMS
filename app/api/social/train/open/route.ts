@@ -10,9 +10,9 @@ export const maxDuration = 30;
  */
 export async function POST(req: NextRequest) {
   try {
-    const b = (await req.json()) as { savedId?: string };
+    const b = (await req.json()) as { savedId?: string; productId?: string };
     if (!b.savedId) return NextResponse.json({ error: "savedId is required" }, { status: 400 });
-    const state = await getBrainService().openSavedPost(b.savedId);
+    const state = await getBrainService().openSavedPost(b.savedId, b.productId);
     return NextResponse.json(state);
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "unknown error" }, { status: 500 });

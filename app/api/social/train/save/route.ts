@@ -11,8 +11,8 @@ export const maxDuration = 30;
  */
 export async function POST(req: NextRequest) {
   try {
-    const b = (await req.json().catch(() => ({}))) as { note?: string };
-    const result = await getBrainService().savePlaygroundPost(b.note);
+    const b = (await req.json().catch(() => ({}))) as { note?: string; productId?: string };
+    const result = await getBrainService().savePlaygroundPost(b.productId, b.note);
     return NextResponse.json(result);
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "unknown error" }, { status: 500 });
